@@ -1,0 +1,25 @@
+{
+  "src_path": "input_zarr_array",
+  "dest_path": "output_zarr_group",
+  "foreground_path": "foreground_zarr_array",
+  "blocksize": [128, 128, 128],
+  "model_kwargs": {
+    "gpu": true
+  },
+  "eval_kwargs": {
+    "diameter": 16,
+    "z_axis": 0,
+    "channels": [0, 0],
+    "min_size": 10,
+    "anisotropy": null,
+    "do_3D": true
+  },
+  "cluster_kwargs": {
+    "ncpus": 2,
+    "min_workers": 2,
+    "max_workers": 80,
+    "queue": "gpu_l4",
+    "job_extra_directives": ["-P project_name", "-gpu \"num=1\""],
+    "log_directory": "./debug_job_logs_new"
+  }
+}
