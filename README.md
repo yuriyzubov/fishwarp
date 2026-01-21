@@ -1,10 +1,10 @@
-# FishWarp: Zebrafish Image Analysis Pipeline
+## FishWarp: Image Analysis Pipeline
 
-A comprehensive pipeline for zebrafish image analysis including cell segmentation using Cellpose and image registration using BigStream.
+A small pipeline for image analysis including cell segmentation using Cellpose and image registration using BigStream.
 
 ## Overview
 
-FishWarp provides tools for:
+FishWarp provides scripts for:
 - **Cell Segmentation**: Distributed Cellpose segmentation with foreground masking
 - **Image Registration**: BigStream-based registration with multiple similarity metrics
 - **Quality Assessment**: Registration quality metrics including NCC, mutual information, and MSE
