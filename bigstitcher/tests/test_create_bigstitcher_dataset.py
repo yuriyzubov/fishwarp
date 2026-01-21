@@ -66,3 +66,31 @@ def test_create_bigstitcher_dataset_with_dask_arrays():
         assert (output_path / "dataset.zarr").exists()
 
 
+def test_create_bigstitcher_dataset_with_zarr_arrays():
+    """Test creating a BigStitcher dataset from zarr arrays."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create source zarr arrays
+        source_path = Path(tmpdir) / "source"
+        source_path.mkdir()
+
+        tile1 = zarr.open(source_path / "tile1.zarr", mode='w', shape=(10, 32, 32), dtype=np.uint8)
+        tile1[:] = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
+
+        tile2 = zarr.open(source_path / "tile2.zarr", mode='w', shape=(10, 32, 32), dtype=np.uint8)
+        tile2[:] = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
+
+        output_folder = Path(tmpdir) / "output"
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile1, tile2],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=output_folder,
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB"
+        )
+
+        assert (output_path / "dataset.xml").exists()
+        assert (output_path / "dataset.zarr").exists()
+
+
