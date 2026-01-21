@@ -16,8 +16,8 @@ import dask.array as da
 from dask.distributed import Client, LocalCluster
 from pathlib import Path
 from typing import List, Tuple, Union, Optional
-from xml.etree.ElementTree import Element, SubElement, tostring
-from xml.dom import minidom
+from lxml import etree
+from lxml.builder import E
 
 
 def create_bigstitcher_dataset(
@@ -482,159 +482,106 @@ def _write_dataset_xml(
     channel_names: List[str]
 ) -> None:
     """Generate the BigStitcher XML file."""
-    # Root element
-    spim_data = Element('SpimData')
-    spim_data.set('version', '0.2')
-
-    # BasePath
-    base_path = SubElement(spim_data, 'BasePath')
-    base_path.set('type', 'relative')
-    base_path.text = '.'
-
-    # SequenceDescription
-    seq_desc = SubElement(spim_data, 'SequenceDescription')
-
-    # ImageLoader
-    img_loader = SubElement(seq_desc, 'ImageLoader')
-    img_loader.set('format', 'bdv.multimg.zarr')
-    img_loader.set('version', '3.0')
-
-    zarr_elem = SubElement(img_loader, 'zarr')
-    zarr_elem.set('type', 'relative')
-    zarr_elem.text = 'dataset.zarr'
-
-    zgroups_elem = SubElement(img_loader, 'zgroups')
-    for zg in zgroups:
-        zgroup_elem = SubElement(zgroups_elem, 'zgroup')
-        zgroup_elem.set('setup', str(zg['setup']))
-        zgroup_elem.set('tp', str(zg['tp']))
-        zgroup_elem.set('path', zg['path'])
-        zgroup_elem.set('indicies', zg['indices'])
-
-    # ViewSetups
-    view_setups_elem = SubElement(seq_desc, 'ViewSetups')
-
     # Collect unique tiles and channels
-    unique_tiles = {}
-    unique_channels = set()
-
-    for vs in view_setups:
-        # ViewSetup element
-        vs_elem = SubElement(view_setups_elem, 'ViewSetup')
-
-        id_elem = SubElement(vs_elem, 'id')
-        id_elem.text = str(vs['id'])
-
-        name_elem = SubElement(vs_elem, 'name')
-        name_elem.text = vs['name']
-
-        size_elem = SubElement(vs_elem, 'size')
-        size_elem.text = f"{vs['size'][0]} {vs['size'][1]} {vs['size'][2]}"
-
-        voxel_elem = SubElement(vs_elem, 'voxelSize')
-        unit_elem = SubElement(voxel_elem, 'unit')
-        unit_elem.text = voxel_unit
-        vsize_elem = SubElement(voxel_elem, 'size')
-        vsize_elem.text = f"{vs['voxel_size'][0]} {vs['voxel_size'][1]} {vs['voxel_size'][2]}"
-
-        attrs_elem = SubElement(vs_elem, 'attributes')
-
-        illum_elem = SubElement(attrs_elem, 'illumination')
-        illum_elem.text = '0'
-
-        channel_elem = SubElement(attrs_elem, 'channel')
-        channel_elem.text = str(vs['channel_id'])
-
-        tile_elem = SubElement(attrs_elem, 'tile')
-        tile_elem.text = str(vs['tile_id'])
-
-        angle_elem = SubElement(attrs_elem, 'angle')
-        angle_elem.text = '0'
-
-        unique_tiles[vs['tile_id']] = vs['tile_name']
-        unique_channels.add(vs['channel_id'])
-
-    # Illumination attributes
-    illum_attrs = SubElement(view_setups_elem, 'Attributes')
-    illum_attrs.set('name', 'illumination')
-    illum = SubElement(illum_attrs, 'Illumination')
-    illum_id = SubElement(illum, 'id')
-    illum_id.text = '0'
-    illum_name = SubElement(illum, 'name')
-    illum_name.text = '0'
-
-    # Channel attributes
-    channel_attrs = SubElement(view_setups_elem, 'Attributes')
-    channel_attrs.set('name', 'channel')
-    for ch_id in sorted(unique_channels):
-        ch = SubElement(channel_attrs, 'Channel')
-        ch_id_elem = SubElement(ch, 'id')
-        ch_id_elem.text = str(ch_id)
-        ch_name_elem = SubElement(ch, 'name')
-        ch_name_elem.text = channel_names[ch_id] if ch_id < len(channel_names) else str(ch_id)
-
-    # Tile attributes
-    tile_attrs = SubElement(view_setups_elem, 'Attributes')
-    tile_attrs.set('name', 'tile')
-    for tile_id in sorted(unique_tiles.keys()):
-        tile = SubElement(tile_attrs, 'Tile')
-        tile_id_elem = SubElement(tile, 'id')
-        tile_id_elem.text = str(tile_id)
-        tile_name_elem = SubElement(tile, 'name')
-        tile_name_elem.text = unique_tiles[tile_id]
-
-    # Angle attributes
-    angle_attrs = SubElement(view_setups_elem, 'Attributes')
-    angle_attrs.set('name', 'angle')
-    angle = SubElement(angle_attrs, 'Angle')
-    angle_id = SubElement(angle, 'id')
-    angle_id.text = '0'
-    angle_name = SubElement(angle, 'name')
-    angle_name.text = '0'
-
-    # Timepoints
-    timepoints = SubElement(seq_desc, 'Timepoints')
-    timepoints.set('type', 'pattern')
-    tp_pattern = SubElement(timepoints, 'integerpattern')
+    unique_tiles = {vs['tile_id']: vs['tile_name'] for vs in view_setups}
+    unique_channels = sorted(set(vs['channel_id'] for vs in view_setups))
     unique_tps = sorted(set(vs['timepoint'] for vs in view_setups))
-    tp_pattern.text = ', '.join(str(tp) for tp in unique_tps)
 
-    # MissingViews (empty)
-    SubElement(seq_desc, 'MissingViews')
+    # Build ViewSetup elements
+    view_setup_elems = [
+        E.ViewSetup(
+            E.id(str(vs['id'])),
+            E.name(vs['name']),
+            E.size(f"{vs['size'][0]} {vs['size'][1]} {vs['size'][2]}"),
+            E.voxelSize(
+                E.unit(voxel_unit),
+                E.size(f"{vs['voxel_size'][0]} {vs['voxel_size'][1]} {vs['voxel_size'][2]}")
+            ),
+            E.attributes(
+                E.illumination('0'),
+                E.channel(str(vs['channel_id'])),
+                E.tile(str(vs['tile_id'])),
+                E.angle('0')
+            )
+        )
+        for vs in view_setups
+    ]
 
-    # ViewRegistrations (identity transforms)
-    view_regs = SubElement(spim_data, 'ViewRegistrations')
-    for vs in view_setups:
-        vr = SubElement(view_regs, 'ViewRegistration')
-        vr.set('timepoint', str(vs['timepoint']))
-        vr.set('setup', str(vs['id']))
+    # Build zgroup elements
+    zgroup_elems = [
+        E.zgroup(setup=str(zg['setup']), tp=str(zg['tp']), path=zg['path'], indicies=zg['indices'])
+        for zg in zgroups
+    ]
 
-        vt = SubElement(vr, 'ViewTransform')
-        vt.set('type', 'affine')
+    # Build ViewRegistration elements
+    view_reg_elems = [
+        E.ViewRegistration(
+            E.ViewTransform(
+                E.Name('calibration'),
+                E.affine('1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0'),
+                type='affine'
+            ),
+            timepoint=str(vs['timepoint']),
+            setup=str(vs['id'])
+        )
+        for vs in view_setups
+    ]
 
-        name = SubElement(vt, 'Name')
-        name.text = 'calibration'
+    # Build Channel elements
+    channel_elems = [
+        E.Channel(
+            E.id(str(ch_id)),
+            E.name(channel_names[ch_id] if ch_id < len(channel_names) else str(ch_id))
+        )
+        for ch_id in unique_channels
+    ]
 
-        affine = SubElement(vt, 'affine')
-        affine.text = '1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0'
+    # Build Tile elements
+    tile_elems = [
+        E.Tile(E.id(str(tile_id)), E.name(unique_tiles[tile_id]))
+        for tile_id in sorted(unique_tiles.keys())
+    ]
 
-    # Empty sections
-    SubElement(spim_data, 'ViewInterestPoints')
-    SubElement(spim_data, 'BoundingBoxes')
-    SubElement(spim_data, 'PointSpreadFunctions')
-    SubElement(spim_data, 'StitchingResults')
-    SubElement(spim_data, 'IntensityAdjustments')
+    # Assemble the full XML structure
+    spim_data = E.SpimData(
+        E.BasePath('.', type='relative'),
+        E.SequenceDescription(
+            E.ImageLoader(
+                E.zarr('dataset.zarr', type='relative'),
+                E.zgroups(*zgroup_elems),
+                format='bdv.multimg.zarr',
+                version='3.0'
+            ),
+            E.ViewSetups(
+                *view_setup_elems,
+                E.Attributes(
+                    E.Illumination(E.id('0'), E.name('0')),
+                    name='illumination'
+                ),
+                E.Attributes(*channel_elems, name='channel'),
+                E.Attributes(*tile_elems, name='tile'),
+                E.Attributes(
+                    E.Angle(E.id('0'), E.name('0')),
+                    name='angle'
+                )
+            ),
+            E.Timepoints(
+                E.integerpattern(', '.join(str(tp) for tp in unique_tps)),
+                type='pattern'
+            ),
+            E.MissingViews()
+        ),
+        E.ViewRegistrations(*view_reg_elems),
+        E.ViewInterestPoints(),
+        E.BoundingBoxes(),
+        E.PointSpreadFunctions(),
+        E.StitchingResults(),
+        E.IntensityAdjustments(),
+        version='0.2'
+    )
 
     # Write with pretty printing
-    xml_str = minidom.parseString(
-        tostring(spim_data, encoding='unicode')
-    ).toprettyxml(indent='  ')
-
-    # Remove extra blank lines
-    lines = [line for line in xml_str.split('\n') if line.strip()]
-    xml_str = '\n'.join(lines)
-
-    with open(xml_path, 'w', encoding='UTF-8') as f:
-        f.write(xml_str)
+    tree = etree.ElementTree(spim_data)
+    tree.write(str(xml_path), pretty_print=True, xml_declaration=True, encoding='UTF-8')
 
 
