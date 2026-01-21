@@ -93,4 +93,63 @@ def test_create_bigstitcher_dataset_with_zarr_arrays():
         assert (output_path / "dataset.xml").exists()
         assert (output_path / "dataset.zarr").exists()
 
+def test_create_bigstitcher_dataset_multiscale_levels():
+    """Test that multiple downsampling levels are created."""
+    tile = np.random.randint(0, 255, size=(16, 64, 64), dtype=np.uint8)
 
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=tmpdir,
+            downsampling_factors=[(2, 2, 2), (4, 4, 4)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB"
+        )
+
+        store = zarr.open(output_path / "dataset.zarr", mode='r')
+        view_group = store["s0-t0.zarr"]
+
+        # Check all resolution levels exist (0=base, 1=2x, 2=4x)
+        assert "0" in view_group
+        assert "1" in view_group
+        assert "2" in view_group
+
+
+def test_create_bigstitcher_dataset_xml_content():
+    """Test that XML contains correct metadata."""
+    tile = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=tmpdir,
+            tile_names=["my_tile"],
+            channel_names=["GFP"],
+            voxel_unit="micrometer",
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB"
+        )
+
+        tree = ET.parse(output_path / "dataset.xml")
+        root = tree.getroot()
+
+        # Check voxel size
+        voxel_size = root.find(".//voxelSize/size")
+        assert voxel_size.text == "0.5 0.5 1.0"
+
+        # Check voxel unit
+        voxel_unit = root.find(".//voxelSize/unit")
+        assert voxel_unit.text == "micrometer"
+
+        # Check tile name
+        tile_name = root.find(".//Attributes[@name='tile']/Tile/name")
+        assert tile_name.text == "my_tile"
+
+        # Check channel name
+        channel_name = root.find(".//Attributes[@name='channel']/Channel/name")
+        assert channel_name.text == "GFP"
