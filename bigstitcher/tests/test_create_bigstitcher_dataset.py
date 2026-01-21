@@ -46,3 +46,23 @@ def test_create_bigstitcher_dataset_with_numpy_arrays():
         assert "s1-t0.zarr" in store
 
 
+def test_create_bigstitcher_dataset_with_dask_arrays():
+    """Test creating a BigStitcher dataset from dask arrays."""
+    tile1 = da.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8, chunks=(10, 32, 32))
+    tile2 = da.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8, chunks=(10, 32, 32))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile1, tile2],
+            voxel_size=(0.259, 0.259, 1.0),
+            output_folder=tmpdir,
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB"
+        )
+
+        assert (output_path / "dataset.xml").exists()
+        assert (output_path / "dataset.zarr").exists()
+
+
