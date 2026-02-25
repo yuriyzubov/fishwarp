@@ -248,3 +248,62 @@ def test_read_base_shape_raises_on_unrecognized_structure():
 
         with pytest.raises(ValueError, match="Cannot determine shape"):
             _read_base_shape(grp)
+
+
+# ─── _parse_interest_points_n5 ───────────────────────────────────────────────
+
+def test_parse_interest_points_n5_missing_path_returns_empty():
+    """Returns an empty list when the n5 path does not exist."""
+    entries = _parse_interest_points_n5("/nonexistent/path/interestpoints.n5")
+    assert entries == []
+
+
+def test_parse_interest_points_n5_single_entry():
+    """Parses a single timepoint/setup/label correctly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+
+        entries = _parse_interest_points_n5(n5_path)
+
+        assert len(entries) == 1
+        assert entries[0]["timepoint"] == 0
+        assert entries[0]["setup"] == 0
+        assert entries[0]["label"] == "beads"
+        assert entries[0]["path"] == "tpId_0_viewSetupId_0/beads"
+
+
+def test_parse_interest_points_n5_multiple_setups_and_labels():
+    """Parses multiple setups and labels, returning one entry per combination."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [
+            (0, 0, "beads"),
+            (0, 0, "blobs"),
+            (0, 1, "beads"),
+        ])
+
+        entries = _parse_interest_points_n5(n5_path)
+
+        assert len(entries) == 3
+        paths = {e["path"] for e in entries}
+        assert "tpId_0_viewSetupId_0/beads" in paths
+        assert "tpId_0_viewSetupId_0/blobs" in paths
+        assert "tpId_0_viewSetupId_1/beads" in paths
+
+
+def test_parse_interest_points_n5_ignores_unexpected_group_names():
+    """Groups not matching tpId_N_viewSetupId_M are silently skipped."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+        # Add an extra group with an unrecognized name
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            store = zarr.N5Store(str(n5_path))
+        zarr.open_group(store=store, mode='a').require_group("attributes")
+
+        entries = _parse_interest_points_n5(n5_path)
+
+        assert len(entries) == 1
+        assert entries[0]["setup"] == 0
