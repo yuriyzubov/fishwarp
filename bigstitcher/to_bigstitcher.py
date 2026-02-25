@@ -212,11 +212,17 @@ def create_bigstitcher_dataset(
                     downsampling_factor=(1, 1, 1)
                 )
 
-                # Write downsampled levels
+                # Write downsampled levels, each cascading from the previous level.
+                # ds_factor is absolute (relative to level 0), so compute the per-step
+                # relative factor as the ratio between consecutive absolute factors.
                 current_data = dask_data
+                prev_factor = (1, 1, 1)
                 for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
-                    print(f"  Writing level {level_idx} (downsample {ds_factor})...")
-                    downsampled = _downsample_dask_array(current_data, ds_factor)
+                    rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
+                    print(f"  Writing level {level_idx} (downsample {rel_factor} from level {level_idx - 1})...")
+                    downsampled = _downsample_dask_array(current_data, rel_factor)
+                    current_data = downsampled
+                    prev_factor = ds_factor
                     _write_resolution_level_dask(
                         view_group=view_group,
                         level=level_idx,
