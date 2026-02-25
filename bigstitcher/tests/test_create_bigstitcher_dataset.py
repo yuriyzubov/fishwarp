@@ -552,3 +552,33 @@ def test_create_bigstitcher_dataset_symlinked_without_interest_points():
 
         root = ET.parse(out / "dataset.xml").getroot()
         assert list(root.find("ViewInterestPoints")) == []
+
+
+# ─── create_bigstitcher_dataset — new interest_points_n5 parameter ───────────
+
+def test_create_bigstitcher_dataset_with_interest_points_n5():
+    """<ViewInterestPoints> is populated when interest_points_n5 is passed."""
+    tile = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = _make_n5_interest_points(
+            Path(tmpdir) / "interestpoints.n5",
+            [(0, 0, "beads"), (0, 0, "blobs")],
+        )
+
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=tmpdir,
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB",
+            interest_points_n5=n5_path,
+        )
+
+        root = ET.parse(output_path / "dataset.xml").getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 2
+        labels = {el.get("label") for el in vip_files}
+        assert labels == {"beads", "blobs"}
