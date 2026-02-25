@@ -473,6 +473,50 @@ def _write_multiscale_metadata(
 
     view_group.attrs['multiscales'] = multiscales
 
+def _parse_interest_points_n5(n5_path: Union[str, Path]) -> List[dict]:
+    """
+    Parse an interestpoints.n5 directory and return a list of interest point entries.
+
+    Each entry is a dict with keys: timepoint (int), setup (int), label (str), path (str).
+    The path is the N5-relative group path, e.g. "tpId_0_viewSetupId_0/beads".
+
+    Top-level groups are expected to be named "tpId_{tp}_viewSetupId_{setup}".
+    Each contains sub-groups named by label (e.g. "beads"), which in turn contain
+    "interestpoints" and "correspondences".
+    """
+    import re
+    import warnings
+
+    n5_path = Path(n5_path)
+    if not n5_path.exists():
+        print(f"Warning: interestpoints.n5 not found at {n5_path}, skipping.")
+        return []
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        store = zarr.N5Store(str(n5_path))
+
+    root = zarr.open_group(store=store, mode='r')
+
+    pattern = re.compile(r"^tpId_(\d+)_viewSetupId_(\d+)$")
+    entries = []
+
+    for group_name in sorted(root.keys()):
+        m = pattern.match(group_name)
+        if not m:
+            continue
+        tp = int(m.group(1))
+        setup = int(m.group(2))
+        view_group = root[group_name]
+        for label in sorted(view_group.keys()):
+            entries.append({
+                "timepoint": tp,
+                "setup": setup,
+                "label": label,
+                "path": f"{group_name}/{label}",
+            })
+
+    return entries
 
 def _write_dataset_xml(
     xml_path: Path,
