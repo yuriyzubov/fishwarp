@@ -307,3 +307,60 @@ def test_parse_interest_points_n5_ignores_unexpected_group_names():
 
         assert len(entries) == 1
         assert entries[0]["setup"] == 0
+
+
+# ─── _write_dataset_xml ──────────────────────────────────────────────────────
+
+def test_write_dataset_xml_interest_points_none_produces_empty_element():
+    """<ViewInterestPoints> is present but empty when interest_points=None."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+
+        root = ET.parse(xml_path).getroot()
+        vip = root.find("ViewInterestPoints")
+        assert vip is not None
+        assert list(vip) == []
+
+
+def test_write_dataset_xml_interest_points_empty_list_produces_empty_element():
+    """<ViewInterestPoints> is empty when interest_points=[]."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"],
+                           interest_points=[])
+
+        root = ET.parse(xml_path).getroot()
+        vip = root.find("ViewInterestPoints")
+        assert vip is not None
+        assert list(vip) == []
+
+
+def test_write_dataset_xml_interest_points_written_correctly():
+    """Each interest point entry becomes a <ViewInterestPointsFile> with correct attributes."""
+    ip_entries = [
+        {"timepoint": 0, "setup": 0, "label": "beads",
+         "path": "tpId_0_viewSetupId_0/beads", "params": "manual"},
+        {"timepoint": 0, "setup": 1, "label": "beads",
+         "path": "tpId_0_viewSetupId_1/beads"},  # no 'params' key → default
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"],
+                           interest_points=ip_entries)
+
+        root = ET.parse(xml_path).getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 2
+
+        first = vip_files[0]
+        assert first.get("timepoint") == "0"
+        assert first.get("setup") == "0"
+        assert first.get("label") == "beads"
+        assert first.get("params") == "manual"
+        assert first.text == "tpId_0_viewSetupId_0/beads"
+
+        # Missing 'params' key defaults to "manual"
+        second = vip_files[1]
+        assert second.get("params") == "manual"
