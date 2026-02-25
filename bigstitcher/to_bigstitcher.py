@@ -287,6 +287,136 @@ def create_bigstitcher_dataset(
 
     return output_folder
 
+
+def create_bigstitcher_dataset_symlinked(
+    zarr_paths: List[Union[str, Path]],
+    voxel_size: Tuple[float, float, float],
+    output_folder: Union[str, Path],
+    voxel_unit: str = "micrometer",
+    tile_names: Optional[List[str]] = None,
+    channel_names: Optional[List[str]] = None,
+    interest_points_n5: Optional[Union[str, Path]] = None,
+) -> Path:
+    """
+    Create a BigStitcher-compatible dataset by symlinking existing zarr arrays.
+
+    No data is copied. Each source zarr is symlinked into dataset.zarr/ and the
+    XML is generated from the source metadata. Useful for large datasets where
+    copying is impractical.
+
+    The source zarr arrays must already have a compatible multiscale structure
+    (OME-Zarr .zattrs with "multiscales", with resolution levels 0, 1, 2, ...).
+
+    Parameters
+    ----------
+    zarr_paths : List[str or Path]
+        Paths to existing zarr array groups. Each becomes one tile/view setup.
+
+    voxel_size : Tuple[float, float, float]
+        Voxel size in (x, y, z) order, in the units specified by voxel_unit.
+
+    output_folder : str or Path
+        Destination folder. Will contain dataset.xml and dataset.zarr/ (with symlinks).
+
+    voxel_unit : str, optional
+        Unit for voxel size. Default is "micrometer".
+
+    tile_names : Optional[List[str]], optional
+        Names for each tile. If None, uses "tile_0", "tile_1", etc.
+
+    channel_names : Optional[List[str]], optional
+        Names for each channel. If None, uses "channel_0".
+
+    interest_points_n5 : str or Path, optional
+        Path to an existing interestpoints.n5 directory. If provided, its group
+        structure is parsed and written into <ViewInterestPoints> in the XML.
+
+    Returns
+    -------
+    Path
+        Path to the created dataset folder containing dataset.xml and dataset.zarr/
+
+    Examples
+    --------
+    >>> create_bigstitcher_dataset_symlinked(
+    ...     zarr_paths=["/data/tile0.zarr", "/data/tile1.zarr"],
+    ...     voxel_size=(0.259, 0.259, 1.0),
+    ...     output_folder="./my_dataset",
+    ...     interest_points_n5="./my_dataset/interestpoints.n5",
+    ... )
+    """
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    dataset_zarr_path = output_folder / "dataset.zarr"
+    dataset_xml_path = output_folder / "dataset.xml"
+    dataset_zarr_path.mkdir(exist_ok=True)
+
+    if tile_names is None:
+        tile_names = [f"tile_{i}" for i in range(len(zarr_paths))]
+    if channel_names is None:
+        channel_names = ["channel_0"]
+
+    view_setups = []
+    zgroups = []
+
+    for tile_idx, src_path in enumerate(zarr_paths):
+        src_path = Path(src_path).resolve()
+        tile_name = tile_names[tile_idx]
+        tp = 0
+        setup_id = tile_idx
+        group_name = f"s{setup_id}-t{tp}.zarr"
+
+        # Symlink source zarr into dataset.zarr/
+        link_path = dataset_zarr_path / group_name
+        if link_path.exists() or link_path.is_symlink():
+            link_path.unlink()
+        link_path.symlink_to(src_path)
+        print(f"Symlinked: {group_name} -> {src_path}")
+
+        # Read shape from source metadata (no data loaded)
+        src_zarr = zarr.open_group(str(src_path), mode='r')
+        shape = _read_base_shape(src_zarr)
+        z, y, x = shape[-3], shape[-2], shape[-1]
+
+        view_setups.append({
+            'id': setup_id,
+            'name': f"s{setup_id}-t{tp}",
+            'size': (x, y, z),
+            'voxel_size': voxel_size,
+            'tile_id': tile_idx,
+            'tile_name': tile_name,
+            'channel_id': 0,
+            'timepoint': tp,
+        })
+        zgroups.append({
+            'setup': setup_id,
+            'tp': tp,
+            'path': group_name,
+            'indices': "0 0",
+        })
+
+    ip_entries = []
+    if interest_points_n5 is not None:
+        ip_entries = _parse_interest_points_n5(interest_points_n5)
+        print(f"Found {len(ip_entries)} interest point entries in {interest_points_n5}")
+
+    _write_dataset_xml(
+        xml_path=dataset_xml_path,
+        view_setups=view_setups,
+        zgroups=zgroups,
+        voxel_unit=voxel_unit,
+        channel_names=channel_names,
+        interest_points=ip_entries,
+    )
+
+    print(f"\nBigStitcher symlinked dataset created at: {output_folder}")
+    print(f"  - dataset.xml: {dataset_xml_path}")
+    print(f"  - dataset.zarr: {dataset_zarr_path} (symlinks only, no data copied)")
+
+    return output_folder
+
+
 def _read_base_shape(zarr_group: zarr.Group) -> Tuple[int, ...]:
     """
     Read the base resolution shape from a zarr group.
