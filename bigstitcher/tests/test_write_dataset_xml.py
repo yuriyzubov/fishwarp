@@ -3,7 +3,6 @@
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from bigstitcher.to_bigstitcher import _write_dataset_xml
 
@@ -29,7 +28,7 @@ SAMPLE_ZGROUPS = [
 
 # Expected XML output
 EXPECTED_XML = """\
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version="1.0" ?>
 <SpimData version="0.2">
   <BasePath type="relative">.</BasePath>
   <SequenceDescription>
@@ -127,12 +126,6 @@ EXPECTED_XML = """\
 </SpimData>"""
 
 
-def normalize_xml(xml_str: str) -> str:
-    """Remove whitespace variations for comparison."""
-    lines = [line.strip() for line in xml_str.strip().split('\n') if line.strip()]
-    return '\n'.join(lines)
-
-
 def test_write_dataset_xml_output():
     """Test that _write_dataset_xml produces expected output."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -145,4 +138,4 @@ def test_write_dataset_xml_output():
         with open(xml_path, 'r') as f:
             actual = f.read()
 
-        assert normalize_xml(actual) == normalize_xml(EXPECTED_XML)
+        assert actual == EXPECTED_XML

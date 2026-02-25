@@ -1,6 +1,7 @@
 """Test for create_bigstitcher_dataset function."""
 
 import tempfile
+import warnings
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -9,7 +10,52 @@ import numpy as np
 import pytest
 import zarr
 
-from bigstitcher.to_bigstitcher import create_bigstitcher_dataset
+from bigstitcher.to_bigstitcher import (
+    _parse_interest_points_n5,
+    _read_base_shape,
+    _write_dataset_xml,
+    add_interest_points_to_xml,
+    create_bigstitcher_dataset,
+    create_bigstitcher_dataset_symlinked,
+)
+
+
+# ─── shared test data ────────────────────────────────────────────────────────
+
+_VIEW_SETUPS = [
+    {
+        'id': 0,
+        'name': 's0-t0',
+        'size': (32, 32, 10),
+        'voxel_size': (0.5, 0.5, 1.0),
+        'tile_id': 0,
+        'tile_name': 'tile_0',
+        'channel_id': 0,
+        'timepoint': 0,
+    }
+]
+_ZGROUPS = [{'setup': 0, 'tp': 0, 'path': 's0-t0.zarr', 'indices': '0 0'}]
+
+
+def _make_n5_interest_points(path: Path, entries) -> Path:
+    """Create a minimal interestpoints.n5 store.
+
+    entries: list of (timepoint, setup, label) tuples.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        store = zarr.N5Store(str(path))
+    root = zarr.open_group(store=store, mode='w')
+    for tp, setup, label in entries:
+        root.require_group(f"tpId_{tp}_viewSetupId_{setup}/{label}")
+    return path
+
+
+def _make_source_zarr(path: Path, shape=(10, 32, 32)) -> Path:
+    """Create a minimal zarr group with a '0' resolution level."""
+    grp = zarr.open_group(str(path), mode='w')
+    grp.create_dataset("0", data=np.zeros(shape, dtype=np.uint8))
+    return path
 
 
 def test_create_bigstitcher_dataset_with_numpy_arrays():
@@ -153,3 +199,386 @@ def test_create_bigstitcher_dataset_xml_content():
         # Check channel name
         channel_name = root.find(".//Attributes[@name='channel']/Channel/name")
         assert channel_name.text == "GFP"
+
+        # <ViewInterestPoints> is present but empty when no interest points given
+        vip = root.find("ViewInterestPoints")
+        assert vip is not None
+        assert list(vip) == []
+
+
+# ─── _read_base_shape ────────────────────────────────────────────────────────
+
+def test_read_base_shape_from_multiscales_metadata():
+    """Reads shape from OME-Zarr multiscales metadata (preferred path)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        grp.create_dataset("0", data=np.zeros((10, 32, 32), dtype=np.uint8))
+        grp.attrs["multiscales"] = [{"datasets": [{"path": "0"}]}]
+
+        shape = _read_base_shape(grp)
+        assert shape == (10, 32, 32)
+
+
+def test_read_base_shape_fallback_to_level_0():
+    """Falls back to the '0' subarray when no multiscales metadata exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        grp.create_dataset("0", data=np.zeros((5, 16, 16), dtype=np.uint8))
+
+        shape = _read_base_shape(grp)
+        assert shape == (5, 16, 16)
+
+
+def test_read_base_shape_fallback_to_s0():
+    """Falls back to the 's0' subarray when '0' is absent."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        grp.create_dataset("s0", data=np.zeros((8, 64, 64), dtype=np.uint8))
+
+        shape = _read_base_shape(grp)
+        assert shape == (8, 64, 64)
+
+
+def test_read_base_shape_raises_on_unrecognized_structure():
+    """Raises ValueError when the group has no recognizable shape source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        # Only an unrecognized subgroup, no metadata
+        grp.require_group("raw_data")
+
+        with pytest.raises(ValueError, match="Cannot determine shape"):
+            _read_base_shape(grp)
+
+
+# ─── _parse_interest_points_n5 ───────────────────────────────────────────────
+
+def test_parse_interest_points_n5_missing_path_returns_empty():
+    """Returns an empty list when the n5 path does not exist."""
+    entries = _parse_interest_points_n5("/nonexistent/path/interestpoints.n5")
+    assert entries == []
+
+
+def test_parse_interest_points_n5_single_entry():
+    """Parses a single timepoint/setup/label correctly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+
+        entries = _parse_interest_points_n5(n5_path)
+
+        assert len(entries) == 1
+        assert entries[0]["timepoint"] == 0
+        assert entries[0]["setup"] == 0
+        assert entries[0]["label"] == "beads"
+        assert entries[0]["path"] == "tpId_0_viewSetupId_0/beads"
+
+
+def test_parse_interest_points_n5_multiple_setups_and_labels():
+    """Parses multiple setups and labels, returning one entry per combination."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [
+            (0, 0, "beads"),
+            (0, 0, "blobs"),
+            (0, 1, "beads"),
+        ])
+
+        entries = _parse_interest_points_n5(n5_path)
+
+        assert len(entries) == 3
+        paths = {e["path"] for e in entries}
+        assert "tpId_0_viewSetupId_0/beads" in paths
+        assert "tpId_0_viewSetupId_0/blobs" in paths
+        assert "tpId_0_viewSetupId_1/beads" in paths
+
+
+def test_parse_interest_points_n5_ignores_unexpected_group_names():
+    """Groups not matching tpId_N_viewSetupId_M are silently skipped."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+        # Add an extra group with an unrecognized name
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            store = zarr.N5Store(str(n5_path))
+        zarr.open_group(store=store, mode='a').require_group("attributes")
+
+        entries = _parse_interest_points_n5(n5_path)
+
+        assert len(entries) == 1
+        assert entries[0]["setup"] == 0
+
+
+# ─── _write_dataset_xml ──────────────────────────────────────────────────────
+
+def test_write_dataset_xml_interest_points_none_produces_empty_element():
+    """<ViewInterestPoints> is present but empty when interest_points=None."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+
+        root = ET.parse(xml_path).getroot()
+        vip = root.find("ViewInterestPoints")
+        assert vip is not None
+        assert list(vip) == []
+
+
+def test_write_dataset_xml_interest_points_empty_list_produces_empty_element():
+    """<ViewInterestPoints> is empty when interest_points=[]."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"],
+                           interest_points=[])
+
+        root = ET.parse(xml_path).getroot()
+        vip = root.find("ViewInterestPoints")
+        assert vip is not None
+        assert list(vip) == []
+
+
+def test_write_dataset_xml_interest_points_written_correctly():
+    """Each interest point entry becomes a <ViewInterestPointsFile> with correct attributes."""
+    ip_entries = [
+        {"timepoint": 0, "setup": 0, "label": "beads",
+         "path": "tpId_0_viewSetupId_0/beads", "params": "manual"},
+        {"timepoint": 0, "setup": 1, "label": "beads",
+         "path": "tpId_0_viewSetupId_1/beads"},  # no 'params' key → default
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"],
+                           interest_points=ip_entries)
+
+        root = ET.parse(xml_path).getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 2
+
+        first = vip_files[0]
+        assert first.get("timepoint") == "0"
+        assert first.get("setup") == "0"
+        assert first.get("label") == "beads"
+        assert first.get("params") == "manual"
+        assert first.text == "tpId_0_viewSetupId_0/beads"
+
+        # Missing 'params' key defaults to "manual"
+        second = vip_files[1]
+        assert second.get("params") == "manual"
+
+
+# ─── add_interest_points_to_xml ──────────────────────────────────────────────
+
+def test_add_interest_points_to_xml_populates_view_interest_points():
+    """Writes interest point entries into an existing XML."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+
+        add_interest_points_to_xml(xml_path, n5_path)
+
+        root = ET.parse(xml_path).getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 1
+        assert vip_files[0].get("label") == "beads"
+        assert vip_files[0].get("timepoint") == "0"
+        assert vip_files[0].get("setup") == "0"
+
+
+def test_add_interest_points_to_xml_replaces_existing_entries():
+    """Calling the function twice replaces, not appends, the entries."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        n5_first = Path(tmpdir) / "ip_first.n5"
+        n5_second = Path(tmpdir) / "ip_second.n5"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _make_n5_interest_points(n5_first, [(0, 0, "blobs")])
+        _make_n5_interest_points(n5_second, [(0, 0, "beads"), (0, 1, "beads")])
+
+        add_interest_points_to_xml(xml_path, n5_first)
+        add_interest_points_to_xml(xml_path, n5_second)
+
+        root = ET.parse(xml_path).getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 2
+        labels = {el.get("label") for el in vip_files}
+        assert labels == {"beads"}
+
+
+def test_add_interest_points_to_xml_raises_if_element_missing():
+    """Raises ValueError when the XML has no <ViewInterestPoints> element."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "broken.xml"
+        xml_path.write_text('<?xml version="1.0" ?><SpimData version="0.2"></SpimData>')
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+
+        with pytest.raises(ValueError, match="ViewInterestPoints"):
+            add_interest_points_to_xml(xml_path, n5_path)
+
+
+def test_add_interest_points_to_xml_empty_when_n5_missing():
+    """When the n5 path does not exist, <ViewInterestPoints> is left empty."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+
+        add_interest_points_to_xml(xml_path, Path(tmpdir) / "nonexistent.n5")
+
+        root = ET.parse(xml_path).getroot()
+        assert list(root.find("ViewInterestPoints")) == []
+
+
+# ─── create_bigstitcher_dataset_symlinked ────────────────────────────────────
+
+def test_create_bigstitcher_dataset_symlinked_creates_symlinks():
+    """Symlinks are created pointing to source zarr paths; no data is copied."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src0 = _make_source_zarr(Path(tmpdir) / "src0.zarr")
+        src1 = _make_source_zarr(Path(tmpdir) / "src1.zarr")
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src0, src1],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=out,
+        )
+
+        link0 = out / "dataset.zarr" / "s0-t0.zarr"
+        link1 = out / "dataset.zarr" / "s1-t0.zarr"
+        assert link0.is_symlink()
+        assert link1.is_symlink()
+        assert link0.resolve() == src0.resolve()
+        assert link1.resolve() == src1.resolve()
+
+
+def test_create_bigstitcher_dataset_symlinked_replaces_existing_symlink():
+    """A stale symlink at the target path is replaced without error."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")
+        out = Path(tmpdir) / "out"
+        (out / "dataset.zarr").mkdir(parents=True)
+        stale_link = out / "dataset.zarr" / "s0-t0.zarr"
+        stale_link.symlink_to("/nonexistent/stale")
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=out,
+        )
+
+        assert stale_link.resolve() == src.resolve()
+
+
+def test_create_bigstitcher_dataset_symlinked_xml_content():
+    """XML contains the correct voxel size, tile name, and array size."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr", shape=(10, 32, 48))
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(0.25, 0.25, 1.0),
+            output_folder=out,
+            tile_names=["my_tile"],
+            channel_names=["DAPI"],
+            voxel_unit="micrometer",
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+
+        assert root.find(".//voxelSize/size").text == "0.25 0.25 1.0"
+        assert root.find(".//voxelSize/unit").text == "micrometer"
+        assert root.find(".//Attributes[@name='tile']/Tile/name").text == "my_tile"
+        assert root.find(".//Attributes[@name='channel']/Channel/name").text == "DAPI"
+        # shape (10, 32, 48) → z=10, y=32, x=48 → size "48 32 10"
+        assert root.find(".//ViewSetup/size").text == "48 32 10"
+
+
+def test_create_bigstitcher_dataset_symlinked_default_names():
+    """Default tile and channel names are generated when not provided."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src0 = _make_source_zarr(Path(tmpdir) / "src0.zarr")
+        src1 = _make_source_zarr(Path(tmpdir) / "src1.zarr")
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src0, src1],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+        tile_names = [el.text for el in root.findall(".//Attributes[@name='tile']/Tile/name")]
+        assert tile_names == ["tile_0", "tile_1"]
+        channel_name = root.find(".//Attributes[@name='channel']/Channel/name").text
+        assert channel_name == "channel_0"
+
+
+def test_create_bigstitcher_dataset_symlinked_with_interest_points():
+    """<ViewInterestPoints> is populated when interest_points_n5 is given."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")
+        n5_path = _make_n5_interest_points(
+            Path(tmpdir) / "interestpoints.n5", [(0, 0, "beads")]
+        )
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+            interest_points_n5=n5_path,
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 1
+        assert vip_files[0].get("label") == "beads"
+
+
+def test_create_bigstitcher_dataset_symlinked_without_interest_points():
+    """<ViewInterestPoints> is empty when interest_points_n5 is not provided."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+        assert list(root.find("ViewInterestPoints")) == []
+
+
+# ─── create_bigstitcher_dataset — new interest_points_n5 parameter ───────────
+
+def test_create_bigstitcher_dataset_with_interest_points_n5():
+    """<ViewInterestPoints> is populated when interest_points_n5 is passed."""
+    tile = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n5_path = _make_n5_interest_points(
+            Path(tmpdir) / "interestpoints.n5",
+            [(0, 0, "beads"), (0, 0, "blobs")],
+        )
+
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=tmpdir,
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB",
+            interest_points_n5=n5_path,
+        )
+
+        root = ET.parse(output_path / "dataset.xml").getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 2
+        labels = {el.get("label") for el in vip_files}
+        assert labels == {"beads", "blobs"}
