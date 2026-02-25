@@ -428,3 +428,127 @@ def test_add_interest_points_to_xml_empty_when_n5_missing():
 
         root = ET.parse(xml_path).getroot()
         assert list(root.find("ViewInterestPoints")) == []
+
+
+# ─── create_bigstitcher_dataset_symlinked ────────────────────────────────────
+
+def test_create_bigstitcher_dataset_symlinked_creates_symlinks():
+    """Symlinks are created pointing to source zarr paths; no data is copied."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src0 = _make_source_zarr(Path(tmpdir) / "src0.zarr")
+        src1 = _make_source_zarr(Path(tmpdir) / "src1.zarr")
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src0, src1],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=out,
+        )
+
+        link0 = out / "dataset.zarr" / "s0-t0.zarr"
+        link1 = out / "dataset.zarr" / "s1-t0.zarr"
+        assert link0.is_symlink()
+        assert link1.is_symlink()
+        assert link0.resolve() == src0.resolve()
+        assert link1.resolve() == src1.resolve()
+
+
+def test_create_bigstitcher_dataset_symlinked_replaces_existing_symlink():
+    """A stale symlink at the target path is replaced without error."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")
+        out = Path(tmpdir) / "out"
+        (out / "dataset.zarr").mkdir(parents=True)
+        stale_link = out / "dataset.zarr" / "s0-t0.zarr"
+        stale_link.symlink_to("/nonexistent/stale")
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=out,
+        )
+
+        assert stale_link.resolve() == src.resolve()
+
+
+def test_create_bigstitcher_dataset_symlinked_xml_content():
+    """XML contains the correct voxel size, tile name, and array size."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr", shape=(10, 32, 48))
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(0.25, 0.25, 1.0),
+            output_folder=out,
+            tile_names=["my_tile"],
+            channel_names=["DAPI"],
+            voxel_unit="micrometer",
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+
+        assert root.find(".//voxelSize/size").text == "0.25 0.25 1.0"
+        assert root.find(".//voxelSize/unit").text == "micrometer"
+        assert root.find(".//Attributes[@name='tile']/Tile/name").text == "my_tile"
+        assert root.find(".//Attributes[@name='channel']/Channel/name").text == "DAPI"
+        # shape (10, 32, 48) → z=10, y=32, x=48 → size "48 32 10"
+        assert root.find(".//ViewSetup/size").text == "48 32 10"
+
+
+def test_create_bigstitcher_dataset_symlinked_default_names():
+    """Default tile and channel names are generated when not provided."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src0 = _make_source_zarr(Path(tmpdir) / "src0.zarr")
+        src1 = _make_source_zarr(Path(tmpdir) / "src1.zarr")
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src0, src1],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+        tile_names = [el.text for el in root.findall(".//Attributes[@name='tile']/Tile/name")]
+        assert tile_names == ["tile_0", "tile_1"]
+        channel_name = root.find(".//Attributes[@name='channel']/Channel/name").text
+        assert channel_name == "channel_0"
+
+
+def test_create_bigstitcher_dataset_symlinked_with_interest_points():
+    """<ViewInterestPoints> is populated when interest_points_n5 is given."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")
+        n5_path = _make_n5_interest_points(
+            Path(tmpdir) / "interestpoints.n5", [(0, 0, "beads")]
+        )
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+            interest_points_n5=n5_path,
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 1
+        assert vip_files[0].get("label") == "beads"
+
+
+def test_create_bigstitcher_dataset_symlinked_without_interest_points():
+    """<ViewInterestPoints> is empty when interest_points_n5 is not provided."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+        assert list(root.find("ViewInterestPoints")) == []
