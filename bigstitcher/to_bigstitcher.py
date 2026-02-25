@@ -214,15 +214,19 @@ def create_bigstitcher_dataset(
                 # Write downsampled levels, each cascading from the previous level.
                 # ds_factor is absolute (relative to level 0), so compute the per-step
                 # relative factor as the ratio between consecutive absolute factors.
+                # After writing each level we reload it from the on-disk zarr array so
+                # that the next level's dask graph starts from disk data rather than
+                # chaining through all prior lazy computations.  Without this, computing
+                # level N would silently re-execute all N-1 preceding downsampling passes
+                # for every output chunk, causing memory to grow with pyramid depth.
                 current_data = dask_data
                 prev_factor = (1, 1, 1)
                 for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
                     rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
                     print(f"  Writing level {level_idx} (downsample {rel_factor} from level {level_idx - 1})...")
                     downsampled = _downsample_dask_array(current_data, rel_factor)
-                    current_data = downsampled
                     prev_factor = ds_factor
-                    _write_resolution_level_dask(
+                    written_arr = _write_resolution_level_dask(
                         view_group=view_group,
                         level=level_idx,
                         dask_data=downsampled,
@@ -230,6 +234,8 @@ def create_bigstitcher_dataset(
                         compressor=compressor,
                         downsampling_factor=ds_factor
                     )
+                    # Break the computation chain: read the written level back from disk.
+                    current_data = da.from_zarr(written_arr)
 
                 # Write multiscale metadata
                 _write_multiscale_metadata(
@@ -556,8 +562,12 @@ def _write_resolution_level_dask(
     chunk_size: Tuple[int, int, int],
     compressor,
     downsampling_factor: Tuple[int, int, int]
-) -> None:
-    """Write a single resolution level to zarr using dask for parallel copying."""
+) -> zarr.Array:
+    """Write a single resolution level to zarr using dask for parallel copying.
+
+    Returns the written zarr.Array so callers can reload it as a new lazy
+    dask array, breaking the computation-graph chain between pyramid levels.
+    """
     t, c, z, y, x = dask_data.shape
 
     # Adjust chunk size to not exceed array dimensions
@@ -596,6 +606,8 @@ def _write_resolution_level_dask(
     if level > 0:
         fz, fy, fx = downsampling_factor
         level_arr.attrs['downsamplingFactors'] = [fz, fy, fx, 1, 1]
+
+    return level_arr
 
 
 def _write_multiscale_metadata(
