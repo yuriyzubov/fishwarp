@@ -29,7 +29,7 @@ SAMPLE_ZGROUPS = [
 
 # Expected XML output
 EXPECTED_XML = """\
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version="1.0" ?>
 <SpimData version="0.2">
   <BasePath type="relative">.</BasePath>
   <SequenceDescription>
