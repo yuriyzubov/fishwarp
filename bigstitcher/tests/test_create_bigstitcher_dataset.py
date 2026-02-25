@@ -199,3 +199,8 @@ def test_create_bigstitcher_dataset_xml_content():
         # Check channel name
         channel_name = root.find(".//Attributes[@name='channel']/Channel/name")
         assert channel_name.text == "GFP"
+
+        # <ViewInterestPoints> is present but empty when no interest points given
+        vip = root.find("ViewInterestPoints")
+        assert vip is not None
+        assert list(vip) == []
