@@ -16,10 +16,9 @@ import dask.array as da
 from dask.distributed import Client, LocalCluster
 from pathlib import Path
 from typing import List, Tuple, Union, Optional
-from lxml import etree
-from lxml.builder import E
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
+
 
 def create_bigstitcher_dataset(
     zarr_arrays: List[Union[zarr.Array, np.ndarray, da.Array, str, Path]],
@@ -89,7 +88,7 @@ def create_bigstitcher_dataset(
 
     memory_limit : str, optional
         Memory limit per worker. Default is "4GB".
-        
+
     interest_points_n5 : str or Path, optional
         Path to an existing interestpoints.n5 directory. If provided, its group
         structure is parsed to discover timepoints, setups, and labels, and the
@@ -287,6 +286,33 @@ def create_bigstitcher_dataset(
         cluster.close()
 
     return output_folder
+
+def _read_base_shape(zarr_group: zarr.Group) -> Tuple[int, ...]:
+    """
+    Read the base resolution shape from a zarr group.
+
+    Tries multiscales metadata first (path "0"), then falls back to iterating
+    subgroups to find the largest array.
+    """
+    # Try OME-Zarr multiscales metadata
+    multiscales = zarr_group.attrs.get("multiscales")
+    if multiscales:
+        base_path = multiscales[0]["datasets"][0]["path"]
+        return zarr_group[base_path].shape
+
+    # Fallback: find "0" or first numeric subgroup
+    for key in ["0", "s0"]:
+        if key in zarr_group:
+            return zarr_group[key].shape
+
+    # Last resort: use the group itself if it's an array
+    if hasattr(zarr_group, 'shape'):
+        return zarr_group.shape
+
+    raise ValueError(
+        f"Cannot determine shape from zarr group. "
+        f"Expected OME-Zarr multiscales metadata or a '0'/'s0' resolution level."
+    )
 
 
 def _load_array_lazy(
@@ -494,6 +520,7 @@ def _write_multiscale_metadata(
 
     view_group.attrs['multiscales'] = multiscales
 
+
 def add_interest_points_to_xml(
     xml_path: Union[str, Path],
     interest_points_n5: Union[str, Path],
@@ -555,6 +582,7 @@ def add_interest_points_to_xml(
 
     print(f"Updated {xml_path} with {len(entries)} interest point entries.")
 
+
 def _parse_interest_points_n5(n5_path: Union[str, Path]) -> List[dict]:
     """
     Parse an interestpoints.n5 directory and return a list of interest point entries.
@@ -599,6 +627,7 @@ def _parse_interest_points_n5(n5_path: Union[str, Path]) -> List[dict]:
             })
 
     return entries
+
 
 def _write_dataset_xml(
     xml_path: Path,
