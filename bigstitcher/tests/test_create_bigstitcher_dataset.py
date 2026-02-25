@@ -1,6 +1,7 @@
 """Test for create_bigstitcher_dataset function."""
 
 import tempfile
+import warnings
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -9,7 +10,52 @@ import numpy as np
 import pytest
 import zarr
 
-from bigstitcher.to_bigstitcher import create_bigstitcher_dataset
+from bigstitcher.to_bigstitcher import (
+    _parse_interest_points_n5,
+    _read_base_shape,
+    _write_dataset_xml,
+    add_interest_points_to_xml,
+    create_bigstitcher_dataset,
+    create_bigstitcher_dataset_symlinked,
+)
+
+
+# ─── shared test data ────────────────────────────────────────────────────────
+
+_VIEW_SETUPS = [
+    {
+        'id': 0,
+        'name': 's0-t0',
+        'size': (32, 32, 10),
+        'voxel_size': (0.5, 0.5, 1.0),
+        'tile_id': 0,
+        'tile_name': 'tile_0',
+        'channel_id': 0,
+        'timepoint': 0,
+    }
+]
+_ZGROUPS = [{'setup': 0, 'tp': 0, 'path': 's0-t0.zarr', 'indices': '0 0'}]
+
+
+def _make_n5_interest_points(path: Path, entries) -> Path:
+    """Create a minimal interestpoints.n5 store.
+
+    entries: list of (timepoint, setup, label) tuples.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        store = zarr.N5Store(str(path))
+    root = zarr.open_group(store=store, mode='w')
+    for tp, setup, label in entries:
+        root.require_group(f"tpId_{tp}_viewSetupId_{setup}/{label}")
+    return path
+
+
+def _make_source_zarr(path: Path, shape=(10, 32, 32)) -> Path:
+    """Create a minimal zarr group with a '0' resolution level."""
+    grp = zarr.open_group(str(path), mode='w')
+    grp.create_dataset("0", data=np.zeros(shape, dtype=np.uint8))
+    return path
 
 
 def test_create_bigstitcher_dataset_with_numpy_arrays():
