@@ -204,3 +204,47 @@ def test_create_bigstitcher_dataset_xml_content():
         vip = root.find("ViewInterestPoints")
         assert vip is not None
         assert list(vip) == []
+
+
+# ─── _read_base_shape ────────────────────────────────────────────────────────
+
+def test_read_base_shape_from_multiscales_metadata():
+    """Reads shape from OME-Zarr multiscales metadata (preferred path)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        grp.create_dataset("0", data=np.zeros((10, 32, 32), dtype=np.uint8))
+        grp.attrs["multiscales"] = [{"datasets": [{"path": "0"}]}]
+
+        shape = _read_base_shape(grp)
+        assert shape == (10, 32, 32)
+
+
+def test_read_base_shape_fallback_to_level_0():
+    """Falls back to the '0' subarray when no multiscales metadata exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        grp.create_dataset("0", data=np.zeros((5, 16, 16), dtype=np.uint8))
+
+        shape = _read_base_shape(grp)
+        assert shape == (5, 16, 16)
+
+
+def test_read_base_shape_fallback_to_s0():
+    """Falls back to the 's0' subarray when '0' is absent."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        grp.create_dataset("s0", data=np.zeros((8, 64, 64), dtype=np.uint8))
+
+        shape = _read_base_shape(grp)
+        assert shape == (8, 64, 64)
+
+
+def test_read_base_shape_raises_on_unrecognized_structure():
+    """Raises ValueError when the group has no recognizable shape source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        grp = zarr.open_group(tmpdir, mode='w')
+        # Only an unrecognized subgroup, no metadata
+        grp.require_group("raw_data")
+
+        with pytest.raises(ValueError, match="Cannot determine shape"):
+            _read_base_shape(grp)
