@@ -266,7 +266,8 @@ def create_bigstitcher_dataset(
             view_setups=view_setups,
             zgroups=zgroups,
             voxel_unit=voxel_unit,
-            channel_names=channel_names
+            channel_names=channel_names,
+            interest_points=ip_entries,
         )
 
         print(f"\nBigStitcher dataset created at: {output_folder}")
