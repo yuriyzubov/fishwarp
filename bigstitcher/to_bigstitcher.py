@@ -473,6 +473,67 @@ def _write_multiscale_metadata(
 
     view_group.attrs['multiscales'] = multiscales
 
+def add_interest_points_to_xml(
+    xml_path: Union[str, Path],
+    interest_points_n5: Union[str, Path],
+) -> None:
+    """
+    Append interest points from an existing interestpoints.n5 into an existing dataset.xml.
+
+    Replaces the contents of the <ViewInterestPoints> element in-place.
+    The XML file is updated directly; all other sections are left untouched.
+
+    Parameters
+    ----------
+    xml_path : str or Path
+        Path to the existing BigStitcher dataset.xml to update.
+
+    interest_points_n5 : str or Path
+        Path to the interestpoints.n5 directory to parse.
+
+    Examples
+    --------
+    >>> add_interest_points_to_xml(
+    ...     xml_path="./my_dataset/dataset.xml",
+    ...     interest_points_n5="./my_dataset/interestpoints.n5",
+    ... )
+    """
+    import xml.etree.ElementTree as ET
+
+    xml_path = Path(xml_path)
+
+    entries = _parse_interest_points_n5(interest_points_n5)
+    print(f"Found {len(entries)} interest point entries in {interest_points_n5}")
+
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    vip = root.find('ViewInterestPoints')
+    if vip is None:
+        raise ValueError(f"<ViewInterestPoints> element not found in {xml_path}")
+
+    # Clear existing entries and repopulate
+    vip.clear()
+    for entry in entries:
+        el = ET.SubElement(vip, 'ViewInterestPointsFile')
+        el.set('timepoint', str(entry['timepoint']))
+        el.set('setup', str(entry['setup']))
+        el.set('label', entry['label'])
+        el.set('params', entry.get('params', 'manual'))
+        el.text = entry['path']
+
+    # Write back with pretty printing
+    xml_str = minidom.parseString(
+        ET.tostring(root, encoding='unicode')
+    ).toprettyxml(indent='  ')
+    lines = [line for line in xml_str.split('\n') if line.strip()]
+    xml_str = '\n'.join(lines)
+
+    with open(xml_path, 'w', encoding='UTF-8') as f:
+        f.write(xml_str)
+
+    print(f"Updated {xml_path} with {len(entries)} interest point entries.")
+
 def _parse_interest_points_n5(n5_path: Union[str, Path]) -> List[dict]:
     """
     Parse an interestpoints.n5 directory and return a list of interest point entries.
