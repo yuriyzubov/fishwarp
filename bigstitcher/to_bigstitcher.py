@@ -35,6 +35,7 @@ def create_bigstitcher_dataset(
     n_workers: int = 4,
     threads_per_worker: int = 2,
     memory_limit: str = "4GB",
+    interest_points_n5: Optional[Union[str, Path]] = None,
 ) -> Path:
     """
     Convert zarr arrays into a BigStitcher-compatible dataset using Dask for
@@ -88,6 +89,12 @@ def create_bigstitcher_dataset(
 
     memory_limit : str, optional
         Memory limit per worker. Default is "4GB".
+        
+    interest_points_n5 : str or Path, optional
+        Path to an existing interestpoints.n5 directory. If provided, its group
+        structure is parsed to discover timepoints, setups, and labels, and the
+        corresponding <ViewInterestPointsFile> entries are written into the XML.
+        If None (default), <ViewInterestPoints> is left empty.
 
     Returns
     -------
@@ -246,6 +253,12 @@ def create_bigstitcher_dataset(
                     'path': group_name,
                     'indices': "0 0"  # Always 0 0 since each zgroup contains data at index [0,0]
                 })
+
+        # Parse interest points N5 if provided
+        ip_entries = []
+        if interest_points_n5 is not None:
+            ip_entries = _parse_interest_points_n5(interest_points_n5)
+            print(f"\nFound {len(ip_entries)} interest point entries in {interest_points_n5}")
 
         # Generate the XML file
         _write_dataset_xml(
