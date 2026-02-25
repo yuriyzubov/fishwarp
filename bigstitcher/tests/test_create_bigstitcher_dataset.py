@@ -364,3 +364,67 @@ def test_write_dataset_xml_interest_points_written_correctly():
         # Missing 'params' key defaults to "manual"
         second = vip_files[1]
         assert second.get("params") == "manual"
+
+
+# ─── add_interest_points_to_xml ──────────────────────────────────────────────
+
+def test_add_interest_points_to_xml_populates_view_interest_points():
+    """Writes interest point entries into an existing XML."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+
+        add_interest_points_to_xml(xml_path, n5_path)
+
+        root = ET.parse(xml_path).getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 1
+        assert vip_files[0].get("label") == "beads"
+        assert vip_files[0].get("timepoint") == "0"
+        assert vip_files[0].get("setup") == "0"
+
+
+def test_add_interest_points_to_xml_replaces_existing_entries():
+    """Calling the function twice replaces, not appends, the entries."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        n5_first = Path(tmpdir) / "ip_first.n5"
+        n5_second = Path(tmpdir) / "ip_second.n5"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _make_n5_interest_points(n5_first, [(0, 0, "blobs")])
+        _make_n5_interest_points(n5_second, [(0, 0, "beads"), (0, 1, "beads")])
+
+        add_interest_points_to_xml(xml_path, n5_first)
+        add_interest_points_to_xml(xml_path, n5_second)
+
+        root = ET.parse(xml_path).getroot()
+        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        assert len(vip_files) == 2
+        labels = {el.get("label") for el in vip_files}
+        assert labels == {"beads"}
+
+
+def test_add_interest_points_to_xml_raises_if_element_missing():
+    """Raises ValueError when the XML has no <ViewInterestPoints> element."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "broken.xml"
+        xml_path.write_text('<?xml version="1.0" ?><SpimData version="0.2"></SpimData>')
+        n5_path = Path(tmpdir) / "interestpoints.n5"
+        _make_n5_interest_points(n5_path, [(0, 0, "beads")])
+
+        with pytest.raises(ValueError, match="ViewInterestPoints"):
+            add_interest_points_to_xml(xml_path, n5_path)
+
+
+def test_add_interest_points_to_xml_empty_when_n5_missing():
+    """When the n5 path does not exist, <ViewInterestPoints> is left empty."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = Path(tmpdir) / "dataset.xml"
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+
+        add_interest_points_to_xml(xml_path, Path(tmpdir) / "nonexistent.n5")
+
+        root = ET.parse(xml_path).getroot()
+        assert list(root.find("ViewInterestPoints")) == []
