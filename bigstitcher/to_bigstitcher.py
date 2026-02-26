@@ -520,6 +520,20 @@ def _normalize_dask_array(
     return arr
 
 
+def _normalize_dask_array_5d(arr: da.Array, original_ndim: int) -> da.Array:
+    """
+    Expand a dask array to 5-D ``(t, c, z, y, x)`` without slicing timepoints.
+
+    Unlike the old per-timepoint extractor this keeps ALL timepoints so an
+    entire tile can be written in one pass.
+    """
+    if original_ndim == 3:
+        return arr[np.newaxis, np.newaxis]       # (1, 1, z, y, x)
+    if original_ndim == 4:
+        return arr[np.newaxis]                   # (1, c, z, y, x)
+    return arr                                   # already (t, c, z, y, x)
+
+
 def _downsample_dask_array(
     arr: da.Array,
     factor: Tuple[int, int, int],
@@ -943,6 +957,27 @@ def _parse_interest_points_n5(n5_path: Union[str, Path]) -> List[dict]:
             })
 
     return entries
+
+
+def _make_view_setup(
+    setup_id: int,
+    name: str,
+    size: Tuple[int, int, int],
+    voxel_size: Tuple[float, float, float],
+    tile_id: int,
+    tile_name: str,
+    channel_id: int,
+) -> dict:
+    """Return a ViewSetup dict (helper to avoid repetition)."""
+    return {
+        "id": setup_id,
+        "name": name,
+        "size": size,
+        "voxel_size": voxel_size,
+        "tile_id": tile_id,
+        "tile_name": tile_name,
+        "channel_id": channel_id,
+    }
 
 
 def _write_dataset_xml(
