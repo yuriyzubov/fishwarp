@@ -37,85 +37,113 @@ def create_bigstitcher_dataset(
     interest_points_n5: Optional[Union[str, Path]] = None,
 ) -> Path:
     """
-    Convert zarr arrays into a BigStitcher-compatible dataset using Dask for
-    lazy loading and parallel processing.
+    Convert arrays into a BigStitcher-compatible dataset using Dask.
+
+    Data is copied (re-encoded) into a new zarr store inside *output_folder*.
+    A multi-resolution pyramid is built for each tile using Dask workers, and a
+    ``dataset.xml`` is generated that BigStitcher / BigDataViewer can open
+    directly.
+
+    The output zarr dimensionality matches the input:
+
+    - **3-D** ``(z, y, x)``       → native 3-D zarr groups; ``indicies="[]"``
+      in the XML; one ``ViewSetup`` per tile.
+    - **4-D** ``(c, z, y, x)``    → 5-D zarr ``(t=1, c, z, y, x)``; one
+      ``ViewSetup`` per channel per tile; ``indicies="0 {ch}"`` per channel.
+    - **5-D** ``(t, c, z, y, x)`` → 5-D zarr; one ``ViewSetup`` per channel
+      per tile; ``indicies="{tp} {ch}"`` per (timepoint, channel) pair.
+
+    All tiles must have the same number of dimensions.
 
     Parameters
     ----------
-    zarr_arrays : List[Union[zarr.Array, np.ndarray, da.Array, str, Path]]
-        List of input arrays. Can be:
-        - zarr.Array objects
-        - numpy arrays
-        - dask arrays
-        - Paths to existing zarr arrays
-        Each array should be 3D (z, y, x), 4D (c, z, y, x), or 5D (t, c, z, y, x)
+    zarr_arrays : list of zarr.Array, np.ndarray, da.Array, str, or Path
+        Input tiles.  Accepted types per element:
 
-    voxel_size : Tuple[float, float, float]
-        Voxel size in (x, y, z) order, in the units specified by voxel_unit.
+        - ``zarr.Array`` or path to a zarr array — opened lazily.
+        - ``numpy.ndarray`` — wrapped in dask with ``chunk_size`` chunks.
+        - ``dask.array.Array`` — used as-is.
 
-    output_folder : Union[str, Path]
-        Destination folder for the BigStitcher dataset.
-        Will create dataset.zarr/ and dataset.xml inside this folder.
+        Each tile must be 3-D, 4-D, or 5-D; all tiles must share the same
+        number of dimensions.
+    voxel_size : tuple of float, ``(vx, vy, vz)``
+        Physical voxel size in **(x, y, z)** order, in the units given by
+        *voxel_unit*.  Used to set ``<voxelSize>`` in the XML and to build the
+        calibration affine transform.
+    output_folder : str or Path
+        Destination directory.  Created if it does not exist.  Will contain:
 
+        - ``dataset.xml`` — BigStitcher project file.
+        - ``dataset.zarr/tile_N.zarr/`` — one zarr group per tile, with
+          resolution levels ``0`` (full), ``1``, ``2``, …
     voxel_unit : str, optional
-        Unit for voxel size. Default is "micrometer".
-        Common values: "micrometer", "nanometer", "millimeter"
-
-    tile_names : Optional[List[str]], optional
-        Names for each tile/view. If None, uses "tile_0", "tile_1", etc.
-
-    channel_names : Optional[List[str]], optional
-        Names for each channel. If None, uses "channel_0", "channel_1", etc.
-
-    downsampling_factors : Optional[List[Tuple[int, int, int]]], optional
-        List of (z, y, x) downsampling factors for multi-resolution pyramid.
-        Default is [(2, 2, 2), (4, 4, 4), (8, 8, 8), (16, 16, 16)]
-
-    chunk_size : Tuple[int, int, int], optional
-        Chunk size for zarr arrays in (z, y, x) order. Default is (64, 128, 128).
-
-    compression : str, optional
-        Compression algorithm. Default is "zstd". Options: "zstd", "gzip", "lz4", None
-
+        Physical unit string written into the XML (e.g. ``"micrometer"``,
+        ``"nanometer"``).  Default is ``"micrometer"``.
+    tile_names : list of str, optional
+        Display names for each tile, one per element of *zarr_arrays*.
+        Defaults to ``["tile_0", "tile_1", …]``.
+    channel_names : list of str, optional
+        Display names for each channel, indexed by channel id.
+        Defaults to ``["channel_0", "channel_1", …]``.
+    downsampling_factors : list of ``(z, y, x)`` tuples, optional
+        **Absolute** downsampling factors defining the pyramid levels.
+        Each tuple is relative to the full-resolution base (level 0), so
+        ``[(2,2,2), (4,4,4)]`` produces levels 0, 1 (2×), 2 (4×).
+        Default: ``[(2,2,2), (4,4,4), (8,8,8), (16,16,16)]``.
+    chunk_size : ``(z, y, x)`` tuple, optional
+        Zarr chunk dimensions.  Default is ``(64, 128, 128)``.
+    compression : str or None, optional
+        Compression codec.  Supported values: ``"zstd"`` (default),
+        ``"gzip"``, ``"lz4"``, ``None`` (no compression).
     compression_level : int, optional
-        Compression level. Default is 3.
-
+        Compression level passed to the codec.  Default is ``3``.
     n_workers : int, optional
-        Number of Dask workers for parallel processing. Default is 4.
-
+        Number of Dask worker processes.  Default is ``4``.
     threads_per_worker : int, optional
-        Number of threads per Dask worker. Default is 2.
-
+        Threads per Dask worker.  Default is ``2``.
     memory_limit : str, optional
-        Memory limit per worker. Default is "4GB".
-
+        Memory limit per worker, e.g. ``"4GB"``.  Default is ``"4GB"``.
     interest_points_n5 : str or Path, optional
-        Path to an existing interestpoints.n5 directory. If provided, its group
-        structure is parsed to discover timepoints, setups, and labels, and the
-        corresponding <ViewInterestPointsFile> entries are written into the XML.
-        If None (default), <ViewInterestPoints> is left empty.
+        Path to an existing ``interestpoints.n5`` directory produced by
+        BigStitcher.  When provided, the group structure is parsed to discover
+        timepoint / setup / label combinations and the corresponding
+        ``<ViewInterestPointsFile>`` entries are written into the XML.
+        If ``None`` (default), ``<ViewInterestPoints>`` is left empty.
 
     Returns
     -------
     Path
-        Path to the created dataset folder containing dataset.xml and dataset.zarr
+        The *output_folder* path containing ``dataset.xml`` and
+        ``dataset.zarr/``.
+
+    Raises
+    ------
+    ValueError
+        If the input tiles do not all have the same number of dimensions.
 
     Examples
     --------
-    >>> import zarr
-    >>> import dask.array as da
-    >>>
-    >>> # Open existing zarr arrays lazily
-    >>> tile1 = zarr.open("path/to/tile1.zarr", mode='r')
-    >>> tile2 = zarr.open("path/to/tile2.zarr", mode='r')
-    >>>
-    >>> # Convert to BigStitcher format with parallel processing
+    Three 3-D tiles from numpy arrays, isotropic voxels:
+
+    >>> import numpy as np
+    >>> from bigstitcher.to_bigstitcher import create_bigstitcher_dataset
+    >>> tiles = [np.zeros((200, 512, 512), dtype=np.uint16) for _ in range(3)]
     >>> create_bigstitcher_dataset(
-    ...     zarr_arrays=[tile1, tile2],
-    ...     voxel_size=(0.5, 0.5, 1.0),  # x, y, z in micrometers
+    ...     zarr_arrays=tiles,
+    ...     voxel_size=(0.26, 0.26, 1.0),
     ...     output_folder="./my_dataset",
-    ...     tile_names=["left_tile", "right_tile"],
-    ...     n_workers=8
+    ...     tile_names=["tile_0", "tile_1", "tile_2"],
+    ...     voxel_unit="micrometer",
+    ...     n_workers=8,
+    ... )
+
+    Two-channel 4-D tiles from zarr paths:
+
+    >>> create_bigstitcher_dataset(
+    ...     zarr_arrays=["/data/tile0.zarr", "/data/tile1.zarr"],
+    ...     voxel_size=(0.26, 0.26, 1.0),
+    ...     output_folder="./multichannel_dataset",
+    ...     channel_names=["DAPI", "GFP"],
     ... )
     """
     output_folder = Path(output_folder)
@@ -124,170 +152,141 @@ def create_bigstitcher_dataset(
     dataset_zarr_path = output_folder / "dataset.zarr"
     dataset_xml_path = output_folder / "dataset.xml"
 
-    # Default downsampling factors if not provided
     if downsampling_factors is None:
         downsampling_factors = [(2, 2, 2), (4, 4, 4), (8, 8, 8), (16, 16, 16)]
 
-    # Start Dask LocalCluster
-    print(f"Starting Dask LocalCluster with {n_workers} workers...")
+    print(f"Starting Dask LocalCluster with {n_workers} workers…")
     cluster = LocalCluster(
         n_workers=n_workers,
         threads_per_worker=threads_per_worker,
-        memory_limit=memory_limit
+        memory_limit=memory_limit,
     )
     client = Client(cluster)
-    print(f"Dask dashboard available at: {client.dashboard_link}")
+    print(f"Dask dashboard: {client.dashboard_link}")
 
     try:
-        # Load and normalize arrays as dask arrays (lazy)
+        # ── Load all arrays lazily ────────────────────────────────────────────
         arrays_info = []
         for i, arr in enumerate(zarr_arrays):
             dask_arr, shape, dtype = _load_array_lazy(arr, chunk_size)
-
-            # Normalize to 5D (t, c, z, y, x)
             normalized_shape, original_ndim = _normalize_shape(shape)
-
             arrays_info.append({
-                'data': dask_arr,
-                'shape': normalized_shape,
-                'original_shape': shape,
-                'original_ndim': original_ndim,
-                'dtype': dtype,
-                'index': i
+                "data": dask_arr,
+                "shape": normalized_shape,
+                "original_shape": shape,
+                "original_ndim": original_ndim,
+                "dtype": dtype,
+                "index": i,
             })
 
-        # Generate tile names if not provided
+        # ── Validate consistent dimensionality ────────────────────────────────
+        ndims = [ai["original_ndim"] for ai in arrays_info]
+        if len(set(ndims)) > 1:
+            raise ValueError(
+                f"All input arrays must have the same number of dimensions. Got: {ndims}"
+            )
+        input_ndim = ndims[0]
+
+        # ── Derive channel / timepoint counts ─────────────────────────────────
+        if input_ndim == 3:
+            n_channels, n_timepoints = 1, 1
+        elif input_ndim == 4:  # (c, z, y, x)
+            n_channels = arrays_info[0]["shape"][1]  # normalised (1, c, z, y, x)
+            n_timepoints = 1
+        else:  # 5D (t, c, z, y, x)
+            n_timepoints = arrays_info[0]["shape"][0]
+            n_channels = arrays_info[0]["shape"][1]
+
         if tile_names is None:
             tile_names = [f"tile_{i}" for i in range(len(zarr_arrays))]
-
-        # Determine number of channels from first array
-        n_channels = arrays_info[0]['shape'][1]
         if channel_names is None:
             channel_names = [f"channel_{i}" for i in range(n_channels)]
 
-        # Create the zarr store
+        # ── Create output zarr store ──────────────────────────────────────────
         store = zarr.DirectoryStore(str(dataset_zarr_path))
         root = zarr.group(store=store, overwrite=True)
 
-        # Setup info for XML generation
-        view_setups = []
-        zgroups = []
-
-        # Get compressor
         compressor = _get_compressor(compression, compression_level)
 
-        # Process each array as a separate view/tile
+        view_setups: List[dict] = []
+        zgroups: List[dict] = []
+
+        # ── Write each tile ───────────────────────────────────────────────────
         for arr_info in arrays_info:
-            tile_idx = arr_info['index']
+            tile_idx = arr_info["index"]
             tile_name = tile_names[tile_idx]
-            t, c, z, y, x = arr_info['shape']
+            group_name = f"tile_{tile_idx}.zarr"
+            view_group = root.create_group(group_name)
 
-            print(f"\nProcessing tile {tile_idx}: {tile_name} (shape: {arr_info['shape']})")
+            print(f"\nProcessing tile {tile_idx}: {tile_name}"
+                  f" (shape: {arr_info['original_shape']})")
 
-            # For simplicity, we create one ViewSetup per tile
-            for tp in range(t):
+            if input_ndim == 3:
+                dask_data = arr_info["data"]  # (z, y, x)
+                z, y, x = dask_data.shape
+
+                _write_tile_3d(
+                    view_group, dask_data, downsampling_factors,
+                    chunk_size, compressor, voxel_size, voxel_unit,
+                )
+
                 setup_id = tile_idx
-                group_name = f"s{setup_id}-t{tp}.zarr"
-
-                # Create the zarr group for this view
-                view_group = root.create_group(group_name)
-
-                # Get normalized dask array for this timepoint
-                dask_data = _normalize_dask_array(
-                    arr_info['data'],
-                    arr_info['original_ndim'],
-                    tp,
-                    chunk_size
-                )
-
-                # Write base resolution (level 0)
-                print(f"  Writing level 0 (full resolution)...")
-                _write_resolution_level_dask(
-                    view_group=view_group,
-                    level=0,
-                    dask_data=dask_data,
-                    chunk_size=chunk_size,
-                    compressor=compressor,
-                    downsampling_factor=(1, 1, 1)
-                )
-
-                # Write downsampled levels, each cascading from the previous level.
-                # ds_factor is absolute (relative to level 0), so compute the per-step
-                # relative factor as the ratio between consecutive absolute factors.
-                # After writing each level we reload it from the on-disk zarr array so
-                # that the next level's dask graph starts from disk data rather than
-                # chaining through all prior lazy computations.  Without this, computing
-                # level N would silently re-execute all N-1 preceding downsampling passes
-                # for every output chunk, causing memory to grow with pyramid depth.
-                current_data = dask_data
-                prev_factor = (1, 1, 1)
-                for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
-                    rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
-                    print(f"  Writing level {level_idx} (downsample {rel_factor} from level {level_idx - 1})...")
-                    downsampled = _downsample_dask_array(current_data, rel_factor)
-                    prev_factor = ds_factor
-                    written_arr = _write_resolution_level_dask(
-                        view_group=view_group,
-                        level=level_idx,
-                        dask_data=downsampled,
-                        chunk_size=chunk_size,
-                        compressor=compressor,
-                        downsampling_factor=ds_factor
-                    )
-                    # Break the computation chain: read the written level back from disk.
-                    current_data = da.from_zarr(written_arr)
-
-                # Write multiscale metadata
-                _write_multiscale_metadata(
-                    view_group=view_group,
-                    base_shape=(z, y, x),
-                    downsampling_factors=downsampling_factors,
-                    voxel_size=voxel_size,
-                    voxel_unit=voxel_unit
-                )
-
-                # Collect info for XML
-                view_setups.append({
-                    'id': setup_id,
-                    'name': f"s{setup_id}-t{tp}",
-                    'size': (x, y, z),  # BigStitcher uses x, y, z order
-                    'voxel_size': voxel_size,
-                    'tile_id': tile_idx,
-                    'tile_name': tile_name,
-                    'channel_id': 0,
-                    'timepoint': tp
-                })
-
+                view_setups.append(_make_view_setup(
+                    setup_id, tile_name, (x, y, z), voxel_size, tile_idx,
+                    tile_name, channel_id=0,
+                ))
                 zgroups.append({
-                    'setup': setup_id,
-                    'tp': tp,
-                    'path': group_name,
-                    'indices': "0 0"  # Always 0 0 since each zgroup contains data at index [0,0]
+                    "setup": setup_id, "tp": 0,
+                    "path": group_name, "indices": "[]",
                 })
 
-        # Parse interest points N5 if provided
-        ip_entries = []
+            else:  # 4D or 5D → write as 5D zarr
+                dask_data = _normalize_dask_array_5d(
+                    arr_info["data"], arr_info["original_ndim"]
+                )
+                t, c, z, y, x = dask_data.shape
+
+                _write_tile_5d(
+                    view_group, dask_data, downsampling_factors,
+                    chunk_size, compressor, voxel_size, voxel_unit,
+                )
+
+                for ch_idx in range(c):
+                    setup_id = tile_idx * c + ch_idx
+                    view_setups.append(_make_view_setup(
+                        setup_id, tile_name, (x, y, z), voxel_size,
+                        tile_idx, tile_name, channel_id=ch_idx,
+                    ))
+                    for tp in range(t):
+                        zgroups.append({
+                            "setup": setup_id, "tp": tp,
+                            "path": group_name,
+                            "indices": f"{tp} {ch_idx}",
+                        })
+
+        # ── Interest points ───────────────────────────────────────────────────
+        ip_entries: List[dict] = []
         if interest_points_n5 is not None:
             ip_entries = _parse_interest_points_n5(interest_points_n5)
-            print(f"\nFound {len(ip_entries)} interest point entries in {interest_points_n5}")
+            print(f"\nFound {len(ip_entries)} interest point entries.")
 
-        # Generate the XML file
+        # ── Write XML ─────────────────────────────────────────────────────────
         _write_dataset_xml(
             xml_path=dataset_xml_path,
             view_setups=view_setups,
             zgroups=zgroups,
             voxel_unit=voxel_unit,
+            voxel_size=voxel_size,
             channel_names=channel_names,
             interest_points=ip_entries,
         )
 
         print(f"\nBigStitcher dataset created at: {output_folder}")
-        print(f"  - dataset.zarr: {dataset_zarr_path}")
-        print(f"  - dataset.xml: {dataset_xml_path}")
+        print(f"  dataset.zarr : {dataset_zarr_path}")
+        print(f"  dataset.xml  : {dataset_xml_path}")
 
     finally:
-        # Clean up Dask cluster
-        print("\nShutting down Dask cluster...")
+        print("\nShutting down Dask cluster…")
         client.close()
         cluster.close()
 
