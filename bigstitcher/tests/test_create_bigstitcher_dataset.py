@@ -219,6 +219,47 @@ def test_create_bigstitcher_dataset_3d_native():
         assert level0.ndim == 3
 
 
+def test_create_bigstitcher_dataset_multichannel():
+    """4D input (c, z, y, x) creates one ViewSetup per channel."""
+    # 2 channels, z=10, y=32, x=32
+    tile = np.random.randint(0, 255, size=(2, 10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=tmpdir,
+            channel_names=["DAPI", "GFP"],
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB",
+        )
+
+        root = ET.parse(output_path / "dataset.xml").getroot()
+
+        # One ViewSetup per channel
+        setups = root.findall(".//ViewSetup")
+        assert len(setups) == 2
+
+        # Two channels declared
+        channels = root.findall(".//Attributes[@name='channel']/Channel")
+        assert len(channels) == 2
+        names = {ch.find("name").text for ch in channels}
+        assert names == {"DAPI", "GFP"}
+
+        # indicies encode channel index ("0 0" and "0 1")
+        zgroups = root.findall(".//zgroup")
+        indices_vals = {zg.get("indicies") for zg in zgroups}
+        assert "0 0" in indices_vals
+        assert "0 1" in indices_vals
+
+        # Data written as 5D zarr
+        store = zarr.open(output_path / "dataset.zarr", mode='r')
+        level0 = store["tile_0.zarr"]["0"]
+        assert level0.ndim == 5
+
+
 # ─── _read_base_shape ────────────────────────────────────────────────────────
 
 def test_read_base_shape_from_multiscales_metadata():
