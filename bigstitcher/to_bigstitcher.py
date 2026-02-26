@@ -37,85 +37,113 @@ def create_bigstitcher_dataset(
     interest_points_n5: Optional[Union[str, Path]] = None,
 ) -> Path:
     """
-    Convert zarr arrays into a BigStitcher-compatible dataset using Dask for
-    lazy loading and parallel processing.
+    Convert arrays into a BigStitcher-compatible dataset using Dask.
+
+    Data is copied (re-encoded) into a new zarr store inside *output_folder*.
+    A multi-resolution pyramid is built for each tile using Dask workers, and a
+    ``dataset.xml`` is generated that BigStitcher / BigDataViewer can open
+    directly.
+
+    The output zarr dimensionality matches the input:
+
+    - **3-D** ``(z, y, x)``       → native 3-D zarr groups; ``indicies="[]"``
+      in the XML; one ``ViewSetup`` per tile.
+    - **4-D** ``(c, z, y, x)``    → 5-D zarr ``(t=1, c, z, y, x)``; one
+      ``ViewSetup`` per channel per tile; ``indicies="0 {ch}"`` per channel.
+    - **5-D** ``(t, c, z, y, x)`` → 5-D zarr; one ``ViewSetup`` per channel
+      per tile; ``indicies="{tp} {ch}"`` per (timepoint, channel) pair.
+
+    All tiles must have the same number of dimensions.
 
     Parameters
     ----------
-    zarr_arrays : List[Union[zarr.Array, np.ndarray, da.Array, str, Path]]
-        List of input arrays. Can be:
-        - zarr.Array objects
-        - numpy arrays
-        - dask arrays
-        - Paths to existing zarr arrays
-        Each array should be 3D (z, y, x), 4D (c, z, y, x), or 5D (t, c, z, y, x)
+    zarr_arrays : list of zarr.Array, np.ndarray, da.Array, str, or Path
+        Input tiles.  Accepted types per element:
 
-    voxel_size : Tuple[float, float, float]
-        Voxel size in (x, y, z) order, in the units specified by voxel_unit.
+        - ``zarr.Array`` or path to a zarr array — opened lazily.
+        - ``numpy.ndarray`` — wrapped in dask with ``chunk_size`` chunks.
+        - ``dask.array.Array`` — used as-is.
 
-    output_folder : Union[str, Path]
-        Destination folder for the BigStitcher dataset.
-        Will create dataset.zarr/ and dataset.xml inside this folder.
+        Each tile must be 3-D, 4-D, or 5-D; all tiles must share the same
+        number of dimensions.
+    voxel_size : tuple of float, ``(vx, vy, vz)``
+        Physical voxel size in **(x, y, z)** order, in the units given by
+        *voxel_unit*.  Used to set ``<voxelSize>`` in the XML and to build the
+        calibration affine transform.
+    output_folder : str or Path
+        Destination directory.  Created if it does not exist.  Will contain:
 
+        - ``dataset.xml`` — BigStitcher project file.
+        - ``dataset.zarr/tile_N.zarr/`` — one zarr group per tile, with
+          resolution levels ``0`` (full), ``1``, ``2``, …
     voxel_unit : str, optional
-        Unit for voxel size. Default is "micrometer".
-        Common values: "micrometer", "nanometer", "millimeter"
-
-    tile_names : Optional[List[str]], optional
-        Names for each tile/view. If None, uses "tile_0", "tile_1", etc.
-
-    channel_names : Optional[List[str]], optional
-        Names for each channel. If None, uses "channel_0", "channel_1", etc.
-
-    downsampling_factors : Optional[List[Tuple[int, int, int]]], optional
-        List of (z, y, x) downsampling factors for multi-resolution pyramid.
-        Default is [(2, 2, 2), (4, 4, 4), (8, 8, 8), (16, 16, 16)]
-
-    chunk_size : Tuple[int, int, int], optional
-        Chunk size for zarr arrays in (z, y, x) order. Default is (64, 128, 128).
-
-    compression : str, optional
-        Compression algorithm. Default is "zstd". Options: "zstd", "gzip", "lz4", None
-
+        Physical unit string written into the XML (e.g. ``"micrometer"``,
+        ``"nanometer"``).  Default is ``"micrometer"``.
+    tile_names : list of str, optional
+        Display names for each tile, one per element of *zarr_arrays*.
+        Defaults to ``["tile_0", "tile_1", …]``.
+    channel_names : list of str, optional
+        Display names for each channel, indexed by channel id.
+        Defaults to ``["channel_0", "channel_1", …]``.
+    downsampling_factors : list of ``(z, y, x)`` tuples, optional
+        **Absolute** downsampling factors defining the pyramid levels.
+        Each tuple is relative to the full-resolution base (level 0), so
+        ``[(2,2,2), (4,4,4)]`` produces levels 0, 1 (2×), 2 (4×).
+        Default: ``[(2,2,2), (4,4,4), (8,8,8), (16,16,16)]``.
+    chunk_size : ``(z, y, x)`` tuple, optional
+        Zarr chunk dimensions.  Default is ``(64, 128, 128)``.
+    compression : str or None, optional
+        Compression codec.  Supported values: ``"zstd"`` (default),
+        ``"gzip"``, ``"lz4"``, ``None`` (no compression).
     compression_level : int, optional
-        Compression level. Default is 3.
-
+        Compression level passed to the codec.  Default is ``3``.
     n_workers : int, optional
-        Number of Dask workers for parallel processing. Default is 4.
-
+        Number of Dask worker processes.  Default is ``4``.
     threads_per_worker : int, optional
-        Number of threads per Dask worker. Default is 2.
-
+        Threads per Dask worker.  Default is ``2``.
     memory_limit : str, optional
-        Memory limit per worker. Default is "4GB".
-
+        Memory limit per worker, e.g. ``"4GB"``.  Default is ``"4GB"``.
     interest_points_n5 : str or Path, optional
-        Path to an existing interestpoints.n5 directory. If provided, its group
-        structure is parsed to discover timepoints, setups, and labels, and the
-        corresponding <ViewInterestPointsFile> entries are written into the XML.
-        If None (default), <ViewInterestPoints> is left empty.
+        Path to an existing ``interestpoints.n5`` directory produced by
+        BigStitcher.  When provided, the group structure is parsed to discover
+        timepoint / setup / label combinations and the corresponding
+        ``<ViewInterestPointsFile>`` entries are written into the XML.
+        If ``None`` (default), ``<ViewInterestPoints>`` is left empty.
 
     Returns
     -------
     Path
-        Path to the created dataset folder containing dataset.xml and dataset.zarr
+        The *output_folder* path containing ``dataset.xml`` and
+        ``dataset.zarr/``.
+
+    Raises
+    ------
+    ValueError
+        If the input tiles do not all have the same number of dimensions.
 
     Examples
     --------
-    >>> import zarr
-    >>> import dask.array as da
-    >>>
-    >>> # Open existing zarr arrays lazily
-    >>> tile1 = zarr.open("path/to/tile1.zarr", mode='r')
-    >>> tile2 = zarr.open("path/to/tile2.zarr", mode='r')
-    >>>
-    >>> # Convert to BigStitcher format with parallel processing
+    Three 3-D tiles from numpy arrays, isotropic voxels:
+
+    >>> import numpy as np
+    >>> from bigstitcher.to_bigstitcher import create_bigstitcher_dataset
+    >>> tiles = [np.zeros((200, 512, 512), dtype=np.uint16) for _ in range(3)]
     >>> create_bigstitcher_dataset(
-    ...     zarr_arrays=[tile1, tile2],
-    ...     voxel_size=(0.5, 0.5, 1.0),  # x, y, z in micrometers
+    ...     zarr_arrays=tiles,
+    ...     voxel_size=(0.26, 0.26, 1.0),
     ...     output_folder="./my_dataset",
-    ...     tile_names=["left_tile", "right_tile"],
-    ...     n_workers=8
+    ...     tile_names=["tile_0", "tile_1", "tile_2"],
+    ...     voxel_unit="micrometer",
+    ...     n_workers=8,
+    ... )
+
+    Two-channel 4-D tiles from zarr paths:
+
+    >>> create_bigstitcher_dataset(
+    ...     zarr_arrays=["/data/tile0.zarr", "/data/tile1.zarr"],
+    ...     voxel_size=(0.26, 0.26, 1.0),
+    ...     output_folder="./multichannel_dataset",
+    ...     channel_names=["DAPI", "GFP"],
     ... )
     """
     output_folder = Path(output_folder)
@@ -124,170 +152,141 @@ def create_bigstitcher_dataset(
     dataset_zarr_path = output_folder / "dataset.zarr"
     dataset_xml_path = output_folder / "dataset.xml"
 
-    # Default downsampling factors if not provided
     if downsampling_factors is None:
         downsampling_factors = [(2, 2, 2), (4, 4, 4), (8, 8, 8), (16, 16, 16)]
 
-    # Start Dask LocalCluster
-    print(f"Starting Dask LocalCluster with {n_workers} workers...")
+    print(f"Starting Dask LocalCluster with {n_workers} workers…")
     cluster = LocalCluster(
         n_workers=n_workers,
         threads_per_worker=threads_per_worker,
-        memory_limit=memory_limit
+        memory_limit=memory_limit,
     )
     client = Client(cluster)
-    print(f"Dask dashboard available at: {client.dashboard_link}")
+    print(f"Dask dashboard: {client.dashboard_link}")
 
     try:
-        # Load and normalize arrays as dask arrays (lazy)
+        # ── Load all arrays lazily ────────────────────────────────────────────
         arrays_info = []
         for i, arr in enumerate(zarr_arrays):
             dask_arr, shape, dtype = _load_array_lazy(arr, chunk_size)
-
-            # Normalize to 5D (t, c, z, y, x)
             normalized_shape, original_ndim = _normalize_shape(shape)
-
             arrays_info.append({
-                'data': dask_arr,
-                'shape': normalized_shape,
-                'original_shape': shape,
-                'original_ndim': original_ndim,
-                'dtype': dtype,
-                'index': i
+                "data": dask_arr,
+                "shape": normalized_shape,
+                "original_shape": shape,
+                "original_ndim": original_ndim,
+                "dtype": dtype,
+                "index": i,
             })
 
-        # Generate tile names if not provided
+        # ── Validate consistent dimensionality ────────────────────────────────
+        ndims = [ai["original_ndim"] for ai in arrays_info]
+        if len(set(ndims)) > 1:
+            raise ValueError(
+                f"All input arrays must have the same number of dimensions. Got: {ndims}"
+            )
+        input_ndim = ndims[0]
+
+        # ── Derive channel / timepoint counts ─────────────────────────────────
+        if input_ndim == 3:
+            n_channels, n_timepoints = 1, 1
+        elif input_ndim == 4:  # (c, z, y, x)
+            n_channels = arrays_info[0]["shape"][1]  # normalised (1, c, z, y, x)
+            n_timepoints = 1
+        else:  # 5D (t, c, z, y, x)
+            n_timepoints = arrays_info[0]["shape"][0]
+            n_channels = arrays_info[0]["shape"][1]
+
         if tile_names is None:
             tile_names = [f"tile_{i}" for i in range(len(zarr_arrays))]
-
-        # Determine number of channels from first array
-        n_channels = arrays_info[0]['shape'][1]
         if channel_names is None:
             channel_names = [f"channel_{i}" for i in range(n_channels)]
 
-        # Create the zarr store
+        # ── Create output zarr store ──────────────────────────────────────────
         store = zarr.DirectoryStore(str(dataset_zarr_path))
         root = zarr.group(store=store, overwrite=True)
 
-        # Setup info for XML generation
-        view_setups = []
-        zgroups = []
-
-        # Get compressor
         compressor = _get_compressor(compression, compression_level)
 
-        # Process each array as a separate view/tile
+        view_setups: List[dict] = []
+        zgroups: List[dict] = []
+
+        # ── Write each tile ───────────────────────────────────────────────────
         for arr_info in arrays_info:
-            tile_idx = arr_info['index']
+            tile_idx = arr_info["index"]
             tile_name = tile_names[tile_idx]
-            t, c, z, y, x = arr_info['shape']
+            group_name = f"tile_{tile_idx}.zarr"
+            view_group = root.create_group(group_name)
 
-            print(f"\nProcessing tile {tile_idx}: {tile_name} (shape: {arr_info['shape']})")
+            print(f"\nProcessing tile {tile_idx}: {tile_name}"
+                  f" (shape: {arr_info['original_shape']})")
 
-            # For simplicity, we create one ViewSetup per tile
-            for tp in range(t):
+            if input_ndim == 3:
+                dask_data = arr_info["data"]  # (z, y, x)
+                z, y, x = dask_data.shape
+
+                _write_tile_3d(
+                    view_group, dask_data, downsampling_factors,
+                    chunk_size, compressor, voxel_size, voxel_unit,
+                )
+
                 setup_id = tile_idx
-                group_name = f"s{setup_id}-t{tp}.zarr"
-
-                # Create the zarr group for this view
-                view_group = root.create_group(group_name)
-
-                # Get normalized dask array for this timepoint
-                dask_data = _normalize_dask_array(
-                    arr_info['data'],
-                    arr_info['original_ndim'],
-                    tp,
-                    chunk_size
-                )
-
-                # Write base resolution (level 0)
-                print(f"  Writing level 0 (full resolution)...")
-                _write_resolution_level_dask(
-                    view_group=view_group,
-                    level=0,
-                    dask_data=dask_data,
-                    chunk_size=chunk_size,
-                    compressor=compressor,
-                    downsampling_factor=(1, 1, 1)
-                )
-
-                # Write downsampled levels, each cascading from the previous level.
-                # ds_factor is absolute (relative to level 0), so compute the per-step
-                # relative factor as the ratio between consecutive absolute factors.
-                # After writing each level we reload it from the on-disk zarr array so
-                # that the next level's dask graph starts from disk data rather than
-                # chaining through all prior lazy computations.  Without this, computing
-                # level N would silently re-execute all N-1 preceding downsampling passes
-                # for every output chunk, causing memory to grow with pyramid depth.
-                current_data = dask_data
-                prev_factor = (1, 1, 1)
-                for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
-                    rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
-                    print(f"  Writing level {level_idx} (downsample {rel_factor} from level {level_idx - 1})...")
-                    downsampled = _downsample_dask_array(current_data, rel_factor)
-                    prev_factor = ds_factor
-                    written_arr = _write_resolution_level_dask(
-                        view_group=view_group,
-                        level=level_idx,
-                        dask_data=downsampled,
-                        chunk_size=chunk_size,
-                        compressor=compressor,
-                        downsampling_factor=ds_factor
-                    )
-                    # Break the computation chain: read the written level back from disk.
-                    current_data = da.from_zarr(written_arr)
-
-                # Write multiscale metadata
-                _write_multiscale_metadata(
-                    view_group=view_group,
-                    base_shape=(z, y, x),
-                    downsampling_factors=downsampling_factors,
-                    voxel_size=voxel_size,
-                    voxel_unit=voxel_unit
-                )
-
-                # Collect info for XML
-                view_setups.append({
-                    'id': setup_id,
-                    'name': f"s{setup_id}-t{tp}",
-                    'size': (x, y, z),  # BigStitcher uses x, y, z order
-                    'voxel_size': voxel_size,
-                    'tile_id': tile_idx,
-                    'tile_name': tile_name,
-                    'channel_id': 0,
-                    'timepoint': tp
-                })
-
+                view_setups.append(_make_view_setup(
+                    setup_id, tile_name, (x, y, z), voxel_size, tile_idx,
+                    tile_name, channel_id=0,
+                ))
                 zgroups.append({
-                    'setup': setup_id,
-                    'tp': tp,
-                    'path': group_name,
-                    'indices': "0 0"  # Always 0 0 since each zgroup contains data at index [0,0]
+                    "setup": setup_id, "tp": 0,
+                    "path": group_name, "indices": "[]",
                 })
 
-        # Parse interest points N5 if provided
-        ip_entries = []
+            else:  # 4D or 5D → write as 5D zarr
+                dask_data = _normalize_dask_array_5d(
+                    arr_info["data"], arr_info["original_ndim"]
+                )
+                t, c, z, y, x = dask_data.shape
+
+                _write_tile_5d(
+                    view_group, dask_data, downsampling_factors,
+                    chunk_size, compressor, voxel_size, voxel_unit,
+                )
+
+                for ch_idx in range(c):
+                    setup_id = tile_idx * c + ch_idx
+                    view_setups.append(_make_view_setup(
+                        setup_id, tile_name, (x, y, z), voxel_size,
+                        tile_idx, tile_name, channel_id=ch_idx,
+                    ))
+                    for tp in range(t):
+                        zgroups.append({
+                            "setup": setup_id, "tp": tp,
+                            "path": group_name,
+                            "indices": f"{tp} {ch_idx}",
+                        })
+
+        # ── Interest points ───────────────────────────────────────────────────
+        ip_entries: List[dict] = []
         if interest_points_n5 is not None:
             ip_entries = _parse_interest_points_n5(interest_points_n5)
-            print(f"\nFound {len(ip_entries)} interest point entries in {interest_points_n5}")
+            print(f"\nFound {len(ip_entries)} interest point entries.")
 
-        # Generate the XML file
+        # ── Write XML ─────────────────────────────────────────────────────────
         _write_dataset_xml(
             xml_path=dataset_xml_path,
             view_setups=view_setups,
             zgroups=zgroups,
             voxel_unit=voxel_unit,
+            voxel_size=voxel_size,
             channel_names=channel_names,
             interest_points=ip_entries,
         )
 
         print(f"\nBigStitcher dataset created at: {output_folder}")
-        print(f"  - dataset.zarr: {dataset_zarr_path}")
-        print(f"  - dataset.xml: {dataset_xml_path}")
+        print(f"  dataset.zarr : {dataset_zarr_path}")
+        print(f"  dataset.xml  : {dataset_xml_path}")
 
     finally:
-        # Clean up Dask cluster
-        print("\nShutting down Dask cluster...")
+        print("\nShutting down Dask cluster…")
         client.close()
         cluster.close()
 
@@ -304,51 +303,68 @@ def create_bigstitcher_dataset_symlinked(
     interest_points_n5: Optional[Union[str, Path]] = None,
 ) -> Path:
     """
-    Create a BigStitcher-compatible dataset by symlinking existing zarr arrays.
+    Create a BigStitcher dataset by symlinking existing zarr groups.
 
-    No data is copied. Each source zarr is symlinked into dataset.zarr/ and the
-    XML is generated from the source metadata. Useful for large datasets where
-    copying is impractical.
+    No data is copied.  Each source zarr group is symlinked as
+    ``dataset.zarr/tile_N.zarr`` and the XML is generated from the source
+    metadata (shape, voxel size).  Useful for large datasets where copying is
+    impractical.
 
-    The source zarr arrays must already have a compatible multiscale structure
-    (OME-Zarr .zattrs with "multiscales", with resolution levels 0, 1, 2, ...).
+    The source zarr groups must already have a compatible multiscale structure:
+    either OME-Zarr ``multiscales`` metadata, or resolution levels named ``"0"``,
+    ``"1"``, … (or ``"s0"``, ``"s1"``, … as a fallback).
+
+    The ``indicies`` attribute in the XML is determined automatically from the
+    shape of the base resolution level:
+
+    - **3-D source** ``(z, y, x)``       → ``indicies="[]"``
+    - **5-D source** ``(t, c, z, y, x)`` → ``indicies="0 0"`` (tp=0, ch=0
+      only).  For multi-channel or multi-timepoint 5-D sources, use
+      :func:`create_bigstitcher_dataset` to write a proper dataset, or edit
+      the XML manually after creation.
 
     Parameters
     ----------
-    zarr_paths : List[str or Path]
-        Paths to existing zarr array groups. Each becomes one tile/view setup.
-
-    voxel_size : Tuple[float, float, float]
-        Voxel size in (x, y, z) order, in the units specified by voxel_unit.
-
+    zarr_paths : list of str or Path
+        Paths to existing zarr array groups.  Each path becomes one tile.
+    voxel_size : tuple of float, ``(vx, vy, vz)``
+        Physical voxel size in **(x, y, z)** order, in the units given by
+        *voxel_unit*.
     output_folder : str or Path
-        Destination folder. Will contain dataset.xml and dataset.zarr/ (with symlinks).
-
+        Destination directory.  Created if it does not exist.  Will contain
+        ``dataset.xml`` and ``dataset.zarr/`` (symlinks only, no data copied).
     voxel_unit : str, optional
-        Unit for voxel size. Default is "micrometer".
-
-    tile_names : Optional[List[str]], optional
-        Names for each tile. If None, uses "tile_0", "tile_1", etc.
-
-    channel_names : Optional[List[str]], optional
-        Names for each channel. If None, uses "channel_0".
-
+        Physical unit string (e.g. ``"micrometer"``).  Default is
+        ``"micrometer"``.
+    tile_names : list of str, optional
+        Display names for each tile.  Defaults to ``["tile_0", "tile_1", …]``.
+    channel_names : list of str, optional
+        Display names for channels.  Defaults to ``["channel_0"]``.
     interest_points_n5 : str or Path, optional
-        Path to an existing interestpoints.n5 directory. If provided, its group
-        structure is parsed and written into <ViewInterestPoints> in the XML.
+        Path to an existing ``interestpoints.n5`` directory.  When provided,
+        ``<ViewInterestPointsFile>`` entries are written into the XML.
 
     Returns
     -------
     Path
-        Path to the created dataset folder containing dataset.xml and dataset.zarr/
+        The *output_folder* path containing ``dataset.xml`` and
+        ``dataset.zarr/``.
+
+    Raises
+    ------
+    ValueError
+        If a source zarr group has no recognizable shape (no multiscales
+        metadata, no ``"0"``/``"s0"`` sub-array).
 
     Examples
     --------
+    >>> from bigstitcher.to_bigstitcher import create_bigstitcher_dataset_symlinked
     >>> create_bigstitcher_dataset_symlinked(
     ...     zarr_paths=["/data/tile0.zarr", "/data/tile1.zarr"],
     ...     voxel_size=(0.259, 0.259, 1.0),
     ...     output_folder="./my_dataset",
-    ...     interest_points_n5="./my_dataset/interestpoints.n5",
+    ...     tile_names=["left", "right"],
+    ...     voxel_unit="micrometer",
     ... )
     """
     output_folder = Path(output_folder)
@@ -363,62 +379,63 @@ def create_bigstitcher_dataset_symlinked(
     if channel_names is None:
         channel_names = ["channel_0"]
 
-    view_setups = []
-    zgroups = []
+    view_setups: List[dict] = []
+    zgroups: List[dict] = []
 
     for tile_idx, src_path in enumerate(zarr_paths):
         src_path = Path(src_path).resolve()
         tile_name = tile_names[tile_idx]
-        tp = 0
-        setup_id = tile_idx
-        group_name = f"s{setup_id}-t{tp}.zarr"
+        group_name = f"tile_{tile_idx}.zarr"
 
-        # Symlink source zarr into dataset.zarr/
+        # Symlink (replace stale links silently)
         link_path = dataset_zarr_path / group_name
         if link_path.exists() or link_path.is_symlink():
             link_path.unlink()
         link_path.symlink_to(src_path)
         print(f"Symlinked: {group_name} -> {src_path}")
 
-        # Read shape from source metadata (no data loaded)
-        src_zarr = zarr.open_group(str(src_path), mode='r')
+        # Read base shape to determine layout
+        src_zarr = zarr.open_group(str(src_path), mode="r")
         shape = _read_base_shape(src_zarr)
+        src_ndim = len(shape)
+
         z, y, x = shape[-3], shape[-2], shape[-1]
 
-        view_setups.append({
-            'id': setup_id,
-            'name': f"s{setup_id}-t{tp}",
-            'size': (x, y, z),
-            'voxel_size': voxel_size,
-            'tile_id': tile_idx,
-            'tile_name': tile_name,
-            'channel_id': 0,
-            'timepoint': tp,
-        })
+        setup_id = tile_idx
+        view_setups.append(_make_view_setup(
+            setup_id, tile_name, (x, y, z), voxel_size,
+            tile_idx, tile_name, channel_id=0,
+        ))
+
+        if src_ndim == 3:
+            indices = "[]"
+        else:
+            # 5D source: single ViewSetup pointing at first (tp=0, ch=0)
+            indices = "0 0"
+
         zgroups.append({
-            'setup': setup_id,
-            'tp': tp,
-            'path': group_name,
-            'indices': "0 0",
+            "setup": setup_id, "tp": 0,
+            "path": group_name, "indices": indices,
         })
 
-    ip_entries = []
+    ip_entries: List[dict] = []
     if interest_points_n5 is not None:
         ip_entries = _parse_interest_points_n5(interest_points_n5)
-        print(f"Found {len(ip_entries)} interest point entries in {interest_points_n5}")
+        print(f"Found {len(ip_entries)} interest point entries.")
 
     _write_dataset_xml(
         xml_path=dataset_xml_path,
         view_setups=view_setups,
         zgroups=zgroups,
         voxel_unit=voxel_unit,
+        voxel_size=voxel_size,
         channel_names=channel_names,
         interest_points=ip_entries,
     )
 
     print(f"\nBigStitcher symlinked dataset created at: {output_folder}")
-    print(f"  - dataset.xml: {dataset_xml_path}")
-    print(f"  - dataset.zarr: {dataset_zarr_path} (symlinks only, no data copied)")
+    print(f"  dataset.xml  : {dataset_xml_path}")
+    print(f"  dataset.zarr : {dataset_zarr_path} (symlinks only)")
 
     return output_folder
 
@@ -520,20 +537,38 @@ def _normalize_dask_array(
     return arr
 
 
-def _downsample_dask_array(arr: da.Array, factor: Tuple[int, int, int]) -> da.Array:
-    """Downsample a 5D dask array by the given factors (z, y, x), preserving dtype."""
+def _normalize_dask_array_5d(arr: da.Array, original_ndim: int) -> da.Array:
+    """
+    Expand a dask array to 5-D ``(t, c, z, y, x)`` without slicing timepoints.
+
+    Unlike the old per-timepoint extractor this keeps ALL timepoints so an
+    entire tile can be written in one pass.
+    """
+    if original_ndim == 3:
+        return arr[np.newaxis, np.newaxis]       # (1, 1, z, y, x)
+    if original_ndim == 4:
+        return arr[np.newaxis]                   # (1, c, z, y, x)
+    return arr                                   # already (t, c, z, y, x)
+
+
+def _downsample_dask_array(
+    arr: da.Array,
+    factor: Tuple[int, int, int],
+) -> da.Array:
+    """
+    Downsample a 3-D or 5-D dask array by ``(fz, fy, fx)`` using block mean.
+
+    Preserves the original dtype.
+    """
     fz, fy, fx = factor
     original_dtype = arr.dtype
 
-    # Use dask coarsen for efficient downsampling with mean aggregation
-    coarsened = da.coarsen(
-        np.mean,
-        arr,
-        {2: fz, 3: fy, 4: fx},  # Axes: t=0, c=1, z=2, y=3, x=4
-        trim_excess=True
-    )
+    if arr.ndim == 3:
+        axes = {0: fz, 1: fy, 2: fx}
+    else:  # 5D
+        axes = {2: fz, 3: fy, 4: fx}
 
-    # Cast back to original dtype to preserve data type consistency
+    coarsened = da.coarsen(np.mean, arr, axes, trim_excess=True)
     return coarsened.astype(original_dtype)
 
 
@@ -553,6 +588,50 @@ def _get_compressor(compression: str, compression_level: int):
         from numcodecs import LZ4
         return LZ4()
     return None
+
+
+def _write_resolution_level_3d(
+    view_group: zarr.Group,
+    level: int,
+    dask_data: da.Array,
+    chunk_size: Tuple[int, int, int],
+    compressor,
+    downsampling_factor: Tuple[int, int, int],
+) -> zarr.Array:
+    """
+    Write one 3-D resolution level ``(z, y, x)`` into *view_group*.
+
+    Returns the written ``zarr.Array`` so callers can reload it to break the
+    dask computation chain between pyramid levels.
+    """
+    z, y, x = dask_data.shape
+    chunks = (
+        min(chunk_size[0], z),
+        min(chunk_size[1], y),
+        min(chunk_size[2], x),
+    )
+
+    level_path = os.path.join(view_group.store.path, view_group.path, str(level))
+    level_arr = zarr.open_array(
+        level_path,
+        mode="w",
+        shape=(z, y, x),
+        chunks=chunks,
+        dtype=dask_data.dtype,
+        compressor=compressor,
+        dimension_separator="/",
+        fill_value=0,
+        filters=[],
+        order="C",
+    )
+
+    da.to_zarr(dask_data.rechunk(chunks), level_arr, overwrite=True, compute=True)
+
+    if level > 0:
+        fz, fy, fx = downsampling_factor
+        level_arr.attrs["downsamplingFactors"] = [fz, fy, fx]
+
+    return level_arr
 
 
 def _write_resolution_level_dask(
@@ -615,52 +694,178 @@ def _write_multiscale_metadata(
     base_shape: Tuple[int, int, int],
     downsampling_factors: List[Tuple[int, int, int]],
     voxel_size: Tuple[float, float, float],
-    voxel_unit: str
+    voxel_unit: str,
+    ndim: int = 5,
 ) -> None:
-    """Write OME-Zarr multiscale metadata to the view group."""
-    vx, vy, vz = voxel_size
+    """
+    Write OME-Zarr ``multiscales`` metadata to a view group.
+
+    Parameters
+    ----------
+    ndim : {3, 5}
+        3 for native 3-D zarr groups, 5 for 5-D (t, c, z, y, x) groups.
+    """
     z, y, x = base_shape
 
-    # Build datasets list
-    datasets = [
-        {
-            "path": "0",
-            "coordinateTransformations": [
-                {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"},
-                {"translation": [0.0, 0.0, 0.0, 0.0, 0.0], "type": "translation"}
-            ]
-        }
-    ]
+    if ndim == 3:
+        axes = [
+            {"type": "space", "name": "z", "unit": voxel_unit, "discrete": False},
+            {"type": "space", "name": "y", "unit": voxel_unit, "discrete": False},
+            {"type": "space", "name": "x", "unit": voxel_unit, "discrete": False},
+        ]
+        base_scale = [1.0, 1.0, 1.0]
+        base_translation = [0.0, 0.0, 0.0]
+        global_scale = [1.0, 1.0, 1.0]
 
-    for i, (fz, fy, fx) in enumerate(downsampling_factors, start=1):
-        datasets.append({
-            "path": str(i),
-            "coordinateTransformations": [
-                {"scale": [1.0, 1.0, float(fz), float(fy), float(fx)], "type": "scale"},
-                {"translation": [0.0, 0.0, (fz-1)/2.0, (fy-1)/2.0, (fx-1)/2.0], "type": "translation"}
-            ]
-        })
+        datasets = [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"scale": base_scale, "type": "scale"},
+                    {"translation": base_translation, "type": "translation"},
+                ],
+            }
+        ]
+        for i, (fz, fy, fx) in enumerate(downsampling_factors, start=1):
+            datasets.append({
+                "path": str(i),
+                "coordinateTransformations": [
+                    {"scale": [float(fz), float(fy), float(fx)], "type": "scale"},
+                    {"translation": [(fz - 1) / 2.0, (fy - 1) / 2.0, (fx - 1) / 2.0],
+                     "type": "translation"},
+                ],
+            })
 
-    multiscales = [{
-        "name": "/",
-        "version": "0.4",
-        "axes": [
+        multiscales = [{
+            "name": "/",
+            "version": "0.4",
+            "axes": axes,
+            "datasets": datasets,
+            "coordinateTransformations": [{"scale": global_scale, "type": "scale"}],
+            "basePath": "",
+            "paths": [str(i) for i in range(len(downsampling_factors) + 1)],
+            "units": [voxel_unit] * 3,
+        }]
+
+    else:  # ndim == 5
+        axes = [
             {"type": "time", "name": "t", "unit": "millisecond", "discrete": False},
             {"type": "channel", "name": "c", "discrete": False},
             {"type": "space", "name": "z", "unit": voxel_unit, "discrete": False},
             {"type": "space", "name": "y", "unit": voxel_unit, "discrete": False},
-            {"type": "space", "name": "x", "unit": voxel_unit, "discrete": False}
-        ],
-        "datasets": datasets,
-        "coordinateTransformations": [
-            {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"}
-        ],
-        "basePath": "",
-        "paths": [str(i) for i in range(len(downsampling_factors) + 1)],
-        "units": [voxel_unit] * 5
-    }]
+            {"type": "space", "name": "x", "unit": voxel_unit, "discrete": False},
+        ]
 
-    view_group.attrs['multiscales'] = multiscales
+        datasets = [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"},
+                    {"translation": [0.0, 0.0, 0.0, 0.0, 0.0], "type": "translation"},
+                ],
+            }
+        ]
+        for i, (fz, fy, fx) in enumerate(downsampling_factors, start=1):
+            datasets.append({
+                "path": str(i),
+                "coordinateTransformations": [
+                    {"scale": [1.0, 1.0, float(fz), float(fy), float(fx)],
+                     "type": "scale"},
+                    {"translation": [0.0, 0.0, (fz - 1) / 2.0, (fy - 1) / 2.0,
+                                     (fx - 1) / 2.0],
+                     "type": "translation"},
+                ],
+            })
+
+        multiscales = [{
+            "name": "/",
+            "version": "0.4",
+            "axes": axes,
+            "datasets": datasets,
+            "coordinateTransformations": [
+                {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"}
+            ],
+            "basePath": "",
+            "paths": [str(i) for i in range(len(downsampling_factors) + 1)],
+            "units": [voxel_unit] * 5,
+        }]
+
+    view_group.attrs["multiscales"] = multiscales
+
+
+# ── Private helpers: full-tile writers ───────────────────────────────────────
+
+
+def _write_tile_3d(
+    view_group: zarr.Group,
+    dask_data: da.Array,
+    downsampling_factors: List[Tuple[int, int, int]],
+    chunk_size: Tuple[int, int, int],
+    compressor,
+    voxel_size: Tuple[float, float, float],
+    voxel_unit: str,
+) -> None:
+    """Write a full 3-D multi-resolution pyramid for one tile."""
+    z, y, x = dask_data.shape
+
+    print("  Writing level 0 (full resolution, 3D)…")
+    _write_resolution_level_3d(
+        view_group, 0, dask_data, chunk_size, compressor, (1, 1, 1)
+    )
+
+    current_data = dask_data
+    prev_factor = (1, 1, 1)
+    for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
+        rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
+        print(f"  Writing level {level_idx} (downsample {rel_factor} from level"
+              f" {level_idx - 1})…")
+        downsampled = _downsample_dask_array(current_data, rel_factor)
+        prev_factor = ds_factor
+        written_arr = _write_resolution_level_3d(
+            view_group, level_idx, downsampled, chunk_size, compressor, ds_factor
+        )
+        current_data = da.from_zarr(written_arr)
+
+    _write_multiscale_metadata(
+        view_group, (z, y, x), downsampling_factors, voxel_size, voxel_unit,
+        ndim=3,
+    )
+
+
+def _write_tile_5d(
+    view_group: zarr.Group,
+    dask_data: da.Array,
+    downsampling_factors: List[Tuple[int, int, int]],
+    chunk_size: Tuple[int, int, int],
+    compressor,
+    voxel_size: Tuple[float, float, float],
+    voxel_unit: str,
+) -> None:
+    """Write a full 5-D ``(t, c, z, y, x)`` multi-resolution pyramid for one tile."""
+    t, c, z, y, x = dask_data.shape
+
+    print("  Writing level 0 (full resolution, 5D)…")
+    _write_resolution_level_dask(
+        view_group, 0, dask_data, chunk_size, compressor, (1, 1, 1)
+    )
+
+    current_data = dask_data
+    prev_factor = (1, 1, 1)
+    for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
+        rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
+        print(f"  Writing level {level_idx} (downsample {rel_factor} from level"
+              f" {level_idx - 1})…")
+        downsampled = _downsample_dask_array(current_data, rel_factor)
+        prev_factor = ds_factor
+        written_arr = _write_resolution_level_dask(
+            view_group, level_idx, downsampled, chunk_size, compressor, ds_factor
+        )
+        current_data = da.from_zarr(written_arr)
+
+    _write_multiscale_metadata(
+        view_group, (z, y, x), downsampling_factors, voxel_size, voxel_unit,
+        ndim=5,
+    )
 
 
 def add_interest_points_to_xml(
@@ -668,21 +873,36 @@ def add_interest_points_to_xml(
     interest_points_n5: Union[str, Path],
 ) -> None:
     """
-    Append interest points from an existing interestpoints.n5 into an existing dataset.xml.
+    Patch an existing ``dataset.xml`` with interest points from an n5 store.
 
-    Replaces the contents of the <ViewInterestPoints> element in-place.
-    The XML file is updated directly; all other sections are left untouched.
+    The ``<ViewInterestPoints>`` element is **replaced** (not appended to) with
+    ``<ViewInterestPointsFile>`` entries discovered in *interest_points_n5*.
+    All other sections of the XML — registrations, view setups, image loader,
+    etc. — are left untouched.
+
+    The n5 store is expected to contain groups named
+    ``tpId_{tp}_viewSetupId_{setup}/{label}``, which is the layout written by
+    BigStitcher's interest-point detection step.  If *interest_points_n5* does
+    not exist, ``<ViewInterestPoints>`` is cleared and the XML is written back
+    with an empty element (no error is raised).
 
     Parameters
     ----------
     xml_path : str or Path
-        Path to the existing BigStitcher dataset.xml to update.
-
+        Path to the existing BigStitcher ``dataset.xml`` to update.
     interest_points_n5 : str or Path
-        Path to the interestpoints.n5 directory to parse.
+        Path to the ``interestpoints.n5`` directory produced by BigStitcher.
+        If the path does not exist the function prints a warning and writes
+        back an empty ``<ViewInterestPoints>`` element.
+
+    Raises
+    ------
+    ValueError
+        If *xml_path* does not contain a ``<ViewInterestPoints>`` element.
 
     Examples
     --------
+    >>> from bigstitcher.to_bigstitcher import add_interest_points_to_xml
     >>> add_interest_points_to_xml(
     ...     xml_path="./my_dataset/dataset.xml",
     ...     interest_points_n5="./my_dataset/interestpoints.n5",
@@ -693,33 +913,31 @@ def add_interest_points_to_xml(
     xml_path = Path(xml_path)
 
     entries = _parse_interest_points_n5(interest_points_n5)
-    print(f"Found {len(entries)} interest point entries in {interest_points_n5}")
+    print(f"Found {len(entries)} interest point entries.")
 
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    vip = root.find('ViewInterestPoints')
+    vip = root.find("ViewInterestPoints")
     if vip is None:
         raise ValueError(f"<ViewInterestPoints> element not found in {xml_path}")
 
-    # Clear existing entries and repopulate
     vip.clear()
     for entry in entries:
-        el = ET.SubElement(vip, 'ViewInterestPointsFile')
-        el.set('timepoint', str(entry['timepoint']))
-        el.set('setup', str(entry['setup']))
-        el.set('label', entry['label'])
-        el.set('params', entry.get('params', 'manual'))
-        el.text = entry['path']
+        el = ET.SubElement(vip, "ViewInterestPointsFile")
+        el.set("timepoint", str(entry["timepoint"]))
+        el.set("setup", str(entry["setup"]))
+        el.set("label", entry["label"])
+        el.set("params", entry.get("params", "manual"))
+        el.text = entry["path"]
 
-    # Write back with pretty printing
     xml_str = minidom.parseString(
-        ET.tostring(root, encoding='unicode')
-    ).toprettyxml(indent='  ')
-    lines = [line for line in xml_str.split('\n') if line.strip()]
-    xml_str = '\n'.join(lines)
+        ET.tostring(root, encoding="unicode")
+    ).toprettyxml(indent="  ")
+    lines = [line for line in xml_str.split("\n") if line.strip()]
+    xml_str = "\n".join(lines)
 
-    with open(xml_path, 'w', encoding='UTF-8') as f:
+    with open(xml_path, "w", encoding="UTF-8") as f:
         f.write(xml_str)
 
     print(f"Updated {xml_path} with {len(entries)} interest point entries.")
@@ -771,173 +989,200 @@ def _parse_interest_points_n5(n5_path: Union[str, Path]) -> List[dict]:
     return entries
 
 
+def _make_view_setup(
+    setup_id: int,
+    name: str,
+    size: Tuple[int, int, int],
+    voxel_size: Tuple[float, float, float],
+    tile_id: int,
+    tile_name: str,
+    channel_id: int,
+) -> dict:
+    """Return a ViewSetup dict (helper to avoid repetition)."""
+    return {
+        "id": setup_id,
+        "name": name,
+        "size": size,
+        "voxel_size": voxel_size,
+        "tile_id": tile_id,
+        "tile_name": tile_name,
+        "channel_id": channel_id,
+    }
+
+
 def _write_dataset_xml(
     xml_path: Path,
     view_setups: List[dict],
     zgroups: List[dict],
     voxel_unit: str,
+    voxel_size: Tuple[float, float, float],
     channel_names: List[str],
     interest_points: Optional[List[dict]] = None,
 ) -> None:
-    """Generate the BigStitcher XML file."""
-    # Root element
-    spim_data = Element('SpimData')
-    spim_data.set('version', '0.2')
+    """
+    Generate and write the BigStitcher ``dataset.xml`` file.
 
-    # BasePath
-    base_path = SubElement(spim_data, 'BasePath')
-    base_path.set('type', 'relative')
-    base_path.text = '.'
+    Parameters
+    ----------
+    view_setups : list of dict
+        Unique per (tile, channel).  Keys: ``id``, ``name``, ``size`` (x,y,z),
+        ``voxel_size``, ``tile_id``, ``tile_name``, ``channel_id``.
+    zgroups : list of dict
+        One entry per (setup, timepoint).  Keys: ``setup``, ``tp``, ``path``,
+        ``indices``.
+    voxel_size : (vx, vy, vz)
+        Used to build the calibration affine in ViewRegistrations.
+    channel_names : list of str
+        Channel display names indexed by ``channel_id``.
+    interest_points : list of dict, optional
+        Entries for ``<ViewInterestPoints>``.
+    """
+    vx, vy, vz = voxel_size
 
-    # SequenceDescription
-    seq_desc = SubElement(spim_data, 'SequenceDescription')
+    # ── Root ─────────────────────────────────────────────────────────────────
+    spim_data = Element("SpimData")
+    spim_data.set("version", "0.2")
+
+    base_path = SubElement(spim_data, "BasePath")
+    base_path.set("type", "relative")
+    base_path.text = "."
+
+    # ── SequenceDescription ───────────────────────────────────────────────────
+    seq_desc = SubElement(spim_data, "SequenceDescription")
 
     # ImageLoader
-    img_loader = SubElement(seq_desc, 'ImageLoader')
-    img_loader.set('format', 'bdv.multimg.zarr')
-    img_loader.set('version', '3.0')
+    img_loader = SubElement(seq_desc, "ImageLoader")
+    img_loader.set("format", "bdv.multimg.zarr")
+    img_loader.set("version", "3.0")
 
-    zarr_elem = SubElement(img_loader, 'zarr')
-    zarr_elem.set('type', 'relative')
-    zarr_elem.text = 'dataset.zarr'
+    zarr_elem = SubElement(img_loader, "zarr")
+    zarr_elem.set("type", "relative")
+    zarr_elem.text = "dataset.zarr"
 
-    zgroups_elem = SubElement(img_loader, 'zgroups')
+    zgroups_elem = SubElement(img_loader, "zgroups")
     for zg in zgroups:
-        zgroup_elem = SubElement(zgroups_elem, 'zgroup')
-        zgroup_elem.set('setup', str(zg['setup']))
-        zgroup_elem.set('tp', str(zg['tp']))
-        zgroup_elem.set('path', zg['path'])
-        zgroup_elem.set('indicies', zg['indices'])
+        zg_elem = SubElement(zgroups_elem, "zgroup")
+        zg_elem.set("setup", str(zg["setup"]))
+        zg_elem.set("tp", str(zg["tp"]))
+        zg_elem.set("path", zg["path"])
+        zg_elem.set("indicies", zg["indices"])  # BigStitcher typo preserved
 
     # ViewSetups
-    view_setups_elem = SubElement(seq_desc, 'ViewSetups')
+    view_setups_elem = SubElement(seq_desc, "ViewSetups")
 
-    # Collect unique tiles and channels
-    unique_tiles = {}
-    unique_channels = set()
+    unique_tiles: dict = {}
+    unique_channels: set = set()
 
     for vs in view_setups:
-        # ViewSetup element
-        vs_elem = SubElement(view_setups_elem, 'ViewSetup')
+        vs_elem = SubElement(view_setups_elem, "ViewSetup")
 
-        id_elem = SubElement(vs_elem, 'id')
-        id_elem.text = str(vs['id'])
+        SubElement(vs_elem, "id").text = str(vs["id"])
+        SubElement(vs_elem, "name").text = vs["name"]
 
-        name_elem = SubElement(vs_elem, 'name')
-        name_elem.text = vs['name']
-
-        size_elem = SubElement(vs_elem, 'size')
+        size_elem = SubElement(vs_elem, "size")
         size_elem.text = f"{vs['size'][0]} {vs['size'][1]} {vs['size'][2]}"
 
-        voxel_elem = SubElement(vs_elem, 'voxelSize')
-        unit_elem = SubElement(voxel_elem, 'unit')
-        unit_elem.text = voxel_unit
-        vsize_elem = SubElement(voxel_elem, 'size')
-        vsize_elem.text = f"{vs['voxel_size'][0]} {vs['voxel_size'][1]} {vs['voxel_size'][2]}"
+        voxel_elem = SubElement(vs_elem, "voxelSize")
+        SubElement(voxel_elem, "unit").text = voxel_unit
+        vsize_elem = SubElement(voxel_elem, "size")
+        vsize_elem.text = (
+            f"{vs['voxel_size'][0]} {vs['voxel_size'][1]} {vs['voxel_size'][2]}"
+        )
 
-        attrs_elem = SubElement(vs_elem, 'attributes')
+        attrs_elem = SubElement(vs_elem, "attributes")
+        SubElement(attrs_elem, "illumination").text = "0"
+        SubElement(attrs_elem, "channel").text = str(vs["channel_id"])
+        SubElement(attrs_elem, "tile").text = str(vs["tile_id"])
+        SubElement(attrs_elem, "angle").text = "0"
 
-        illum_elem = SubElement(attrs_elem, 'illumination')
-        illum_elem.text = '0'
+        unique_tiles[vs["tile_id"]] = vs["tile_name"]
+        unique_channels.add(vs["channel_id"])
 
-        channel_elem = SubElement(attrs_elem, 'channel')
-        channel_elem.text = str(vs['channel_id'])
-
-        tile_elem = SubElement(attrs_elem, 'tile')
-        tile_elem.text = str(vs['tile_id'])
-
-        angle_elem = SubElement(attrs_elem, 'angle')
-        angle_elem.text = '0'
-
-        unique_tiles[vs['tile_id']] = vs['tile_name']
-        unique_channels.add(vs['channel_id'])
-
-    # Illumination attributes
-    illum_attrs = SubElement(view_setups_elem, 'Attributes')
-    illum_attrs.set('name', 'illumination')
-    illum = SubElement(illum_attrs, 'Illumination')
-    illum_id = SubElement(illum, 'id')
-    illum_id.text = '0'
-    illum_name = SubElement(illum, 'name')
-    illum_name.text = '0'
+    # Illumination attributes (single illumination)
+    illum_attrs = SubElement(view_setups_elem, "Attributes")
+    illum_attrs.set("name", "illumination")
+    illum = SubElement(illum_attrs, "Illumination")
+    SubElement(illum, "id").text = "0"
+    SubElement(illum, "name").text = "0"
 
     # Channel attributes
-    channel_attrs = SubElement(view_setups_elem, 'Attributes')
-    channel_attrs.set('name', 'channel')
+    ch_attrs = SubElement(view_setups_elem, "Attributes")
+    ch_attrs.set("name", "channel")
     for ch_id in sorted(unique_channels):
-        ch = SubElement(channel_attrs, 'Channel')
-        ch_id_elem = SubElement(ch, 'id')
-        ch_id_elem.text = str(ch_id)
-        ch_name_elem = SubElement(ch, 'name')
-        ch_name_elem.text = channel_names[ch_id] if ch_id < len(channel_names) else str(ch_id)
+        ch = SubElement(ch_attrs, "Channel")
+        SubElement(ch, "id").text = str(ch_id)
+        SubElement(ch, "name").text = (
+            channel_names[ch_id] if ch_id < len(channel_names) else str(ch_id)
+        )
 
     # Tile attributes
-    tile_attrs = SubElement(view_setups_elem, 'Attributes')
-    tile_attrs.set('name', 'tile')
-    for tile_id in sorted(unique_tiles.keys()):
-        tile = SubElement(tile_attrs, 'Tile')
-        tile_id_elem = SubElement(tile, 'id')
-        tile_id_elem.text = str(tile_id)
-        tile_name_elem = SubElement(tile, 'name')
-        tile_name_elem.text = unique_tiles[tile_id]
+    tile_attrs = SubElement(view_setups_elem, "Attributes")
+    tile_attrs.set("name", "tile")
+    for tile_id in sorted(unique_tiles):
+        tile = SubElement(tile_attrs, "Tile")
+        SubElement(tile, "id").text = str(tile_id)
+        SubElement(tile, "name").text = unique_tiles[tile_id]
 
-    # Angle attributes
-    angle_attrs = SubElement(view_setups_elem, 'Attributes')
-    angle_attrs.set('name', 'angle')
-    angle = SubElement(angle_attrs, 'Angle')
-    angle_id = SubElement(angle, 'id')
-    angle_id.text = '0'
-    angle_name = SubElement(angle, 'name')
-    angle_name.text = '0'
+    # Angle attributes (single angle)
+    angle_attrs = SubElement(view_setups_elem, "Attributes")
+    angle_attrs.set("name", "angle")
+    angle = SubElement(angle_attrs, "Angle")
+    SubElement(angle, "id").text = "0"
+    SubElement(angle, "name").text = "0"
 
-    # Timepoints
-    timepoints = SubElement(seq_desc, 'Timepoints')
-    timepoints.set('type', 'pattern')
-    tp_pattern = SubElement(timepoints, 'integerpattern')
-    unique_tps = sorted(set(vs['timepoint'] for vs in view_setups))
-    tp_pattern.text = ', '.join(str(tp) for tp in unique_tps)
+    # Timepoints — derived from zgroups
+    unique_tps = sorted({zg["tp"] for zg in zgroups})
+    timepoints = SubElement(seq_desc, "Timepoints")
+    timepoints.set("type", "pattern")
+    SubElement(timepoints, "integerpattern").text = ",".join(str(tp) for tp in unique_tps)
 
-    # MissingViews (empty)
-    SubElement(seq_desc, 'MissingViews')
+    SubElement(seq_desc, "MissingViews")
 
-    # ViewRegistrations (identity transforms)
-    view_regs = SubElement(spim_data, 'ViewRegistrations')
-    for vs in view_setups:
-        vr = SubElement(view_regs, 'ViewRegistration')
-        vr.set('timepoint', str(vs['timepoint']))
-        vr.set('setup', str(vs['id']))
+    # ── ViewRegistrations ─────────────────────────────────────────────────────
+    # One registration per unique (tp, setup) pair, ordered by tp then setup.
+    calibration_affine = (
+        f"{vx} 0.0 0.0 0.0 0.0 {vy} 0.0 0.0 0.0 0.0 {vz} 0.0"
+    )
 
-        vt = SubElement(vr, 'ViewTransform')
-        vt.set('type', 'affine')
+    view_regs = SubElement(spim_data, "ViewRegistrations")
+    seen_regs: set = set()
+    for zg in sorted(zgroups, key=lambda z: (z["tp"], z["setup"])):
+        key = (zg["tp"], zg["setup"])
+        if key in seen_regs:
+            continue
+        seen_regs.add(key)
 
-        name = SubElement(vt, 'Name')
-        name.text = 'calibration'
+        vr = SubElement(view_regs, "ViewRegistration")
+        vr.set("timepoint", str(zg["tp"]))
+        vr.set("setup", str(zg["setup"]))
 
-        affine = SubElement(vt, 'affine')
-        affine.text = '1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0'
+        vt = SubElement(vr, "ViewTransform")
+        vt.set("type", "affine")
+        SubElement(vt, "Name").text = "calibration"
+        SubElement(vt, "affine").text = calibration_affine
 
-    # Interest points
-    vip_elem = SubElement(spim_data, 'ViewInterestPoints')
+    # ── Optional sections ─────────────────────────────────────────────────────
+    vip_elem = SubElement(spim_data, "ViewInterestPoints")
     for entry in (interest_points or []):
-        vip_file = SubElement(vip_elem, 'ViewInterestPointsFile')
-        vip_file.set('timepoint', str(entry['timepoint']))
-        vip_file.set('setup', str(entry['setup']))
-        vip_file.set('label', entry['label'])
-        vip_file.set('params', entry.get('params', 'manual'))
-        vip_file.text = entry['path']
-    SubElement(spim_data, 'BoundingBoxes')
-    SubElement(spim_data, 'PointSpreadFunctions')
-    SubElement(spim_data, 'StitchingResults')
-    SubElement(spim_data, 'IntensityAdjustments')
+        vip_file = SubElement(vip_elem, "ViewInterestPointsFile")
+        vip_file.set("timepoint", str(entry["timepoint"]))
+        vip_file.set("setup", str(entry["setup"]))
+        vip_file.set("label", entry["label"])
+        vip_file.set("params", entry.get("params", "manual"))
+        vip_file.text = entry["path"]
 
-    # Write with pretty printing
+    SubElement(spim_data, "BoundingBoxes")
+    SubElement(spim_data, "PointSpreadFunctions")
+    SubElement(spim_data, "StitchingResults")
+    SubElement(spim_data, "IntensityAdjustments")
+
+    # ── Serialise ─────────────────────────────────────────────────────────────
     xml_str = minidom.parseString(
-        tostring(spim_data, encoding='unicode')
-    ).toprettyxml(indent='  ')
+        tostring(spim_data, encoding="unicode")
+    ).toprettyxml(indent="  ")
 
-    # Remove extra blank lines
-    lines = [line for line in xml_str.split('\n') if line.strip()]
-    xml_str = '\n'.join(lines)
+    lines = [line for line in xml_str.split("\n") if line.strip()]
+    xml_str = "\n".join(lines)
 
-    with open(xml_path, 'w', encoding='UTF-8') as f:
+    with open(xml_path, "w", encoding="UTF-8") as f:
         f.write(xml_str)

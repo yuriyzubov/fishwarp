@@ -1,4 +1,4 @@
-"""Test for create_bigstitcher_dataset function."""
+"""Tests for create_bigstitcher_dataset and related helpers."""
 
 import tempfile
 import warnings
@@ -22,19 +22,20 @@ from bigstitcher.to_bigstitcher import (
 
 # ─── shared test data ────────────────────────────────────────────────────────
 
+# ViewSetups are unique per (tile, channel) — no 'timepoint' key.
 _VIEW_SETUPS = [
     {
         'id': 0,
-        'name': 's0-t0',
+        'name': 'tile_0',
         'size': (32, 32, 10),
         'voxel_size': (0.5, 0.5, 1.0),
         'tile_id': 0,
         'tile_name': 'tile_0',
         'channel_id': 0,
-        'timepoint': 0,
     }
 ]
-_ZGROUPS = [{'setup': 0, 'tp': 0, 'path': 's0-t0.zarr', 'indices': '0 0'}]
+_ZGROUPS = [{'setup': 0, 'tp': 0, 'path': 'tile_0.zarr', 'indices': '0 0'}]
+_VOXEL_SIZE = (0.5, 0.5, 1.0)
 
 
 def _make_n5_interest_points(path: Path, entries) -> Path:
@@ -58,9 +59,10 @@ def _make_source_zarr(path: Path, shape=(10, 32, 32)) -> Path:
     return path
 
 
+# ─── create_bigstitcher_dataset ───────────────────────────────────────────────
+
 def test_create_bigstitcher_dataset_with_numpy_arrays():
     """Test creating a BigStitcher dataset from numpy arrays."""
-    # Create small test arrays (z, y, x)
     tile1 = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
     tile2 = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
 
@@ -70,26 +72,23 @@ def test_create_bigstitcher_dataset_with_numpy_arrays():
             voxel_size=(0.5, 0.5, 1.0),
             output_folder=tmpdir,
             tile_names=["tile_0", "tile_1"],
-            downsampling_factors=[(2, 2, 2)],  # Only one level to speed up test
+            downsampling_factors=[(2, 2, 2)],
             n_workers=1,
             threads_per_worker=1,
-            memory_limit="1GB"
+            memory_limit="1GB",
         )
 
-        # Check output folder structure
         assert output_path == Path(tmpdir)
         assert (output_path / "dataset.xml").exists()
         assert (output_path / "dataset.zarr").exists()
 
-        # Check XML is valid and has expected structure
         tree = ET.parse(output_path / "dataset.xml")
         root = tree.getroot()
         assert root.tag == "SpimData"
 
-        # Check zarr has expected groups
         store = zarr.open(output_path / "dataset.zarr", mode='r')
-        assert "s0-t0.zarr" in store
-        assert "s1-t0.zarr" in store
+        assert "tile_0.zarr" in store
+        assert "tile_1.zarr" in store
 
 
 def test_create_bigstitcher_dataset_with_dask_arrays():
@@ -105,7 +104,7 @@ def test_create_bigstitcher_dataset_with_dask_arrays():
             downsampling_factors=[(2, 2, 2)],
             n_workers=1,
             threads_per_worker=1,
-            memory_limit="1GB"
+            memory_limit="1GB",
         )
 
         assert (output_path / "dataset.xml").exists()
@@ -115,7 +114,6 @@ def test_create_bigstitcher_dataset_with_dask_arrays():
 def test_create_bigstitcher_dataset_with_zarr_arrays():
     """Test creating a BigStitcher dataset from zarr arrays."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create source zarr arrays
         source_path = Path(tmpdir) / "source"
         source_path.mkdir()
 
@@ -133,14 +131,15 @@ def test_create_bigstitcher_dataset_with_zarr_arrays():
             downsampling_factors=[(2, 2, 2)],
             n_workers=1,
             threads_per_worker=1,
-            memory_limit="1GB"
+            memory_limit="1GB",
         )
 
         assert (output_path / "dataset.xml").exists()
         assert (output_path / "dataset.zarr").exists()
 
+
 def test_create_bigstitcher_dataset_multiscale_levels():
-    """Test that multiple downsampling levels are created."""
+    """Multiple downsampling levels are created for each tile."""
     tile = np.random.randint(0, 255, size=(16, 64, 64), dtype=np.uint8)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -151,20 +150,20 @@ def test_create_bigstitcher_dataset_multiscale_levels():
             downsampling_factors=[(2, 2, 2), (4, 4, 4)],
             n_workers=1,
             threads_per_worker=1,
-            memory_limit="1GB"
+            memory_limit="1GB",
         )
 
         store = zarr.open(output_path / "dataset.zarr", mode='r')
-        view_group = store["s0-t0.zarr"]
+        view_group = store["tile_0.zarr"]
 
-        # Check all resolution levels exist (0=base, 1=2x, 2=4x)
+        # 0 = base, 1 = 2x, 2 = 4x
         assert "0" in view_group
         assert "1" in view_group
         assert "2" in view_group
 
 
 def test_create_bigstitcher_dataset_xml_content():
-    """Test that XML contains correct metadata."""
+    """XML contains correct voxel size, tile name, channel name, and empty ViewInterestPoints."""
     tile = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -178,32 +177,126 @@ def test_create_bigstitcher_dataset_xml_content():
             downsampling_factors=[(2, 2, 2)],
             n_workers=1,
             threads_per_worker=1,
-            memory_limit="1GB"
+            memory_limit="1GB",
         )
 
-        tree = ET.parse(output_path / "dataset.xml")
-        root = tree.getroot()
+        root = ET.parse(output_path / "dataset.xml").getroot()
 
-        # Check voxel size
-        voxel_size = root.find(".//voxelSize/size")
-        assert voxel_size.text == "0.5 0.5 1.0"
+        assert root.find(".//voxelSize/size").text == "0.5 0.5 1.0"
+        assert root.find(".//voxelSize/unit").text == "micrometer"
+        assert root.find(".//Attributes[@name='tile']/Tile/name").text == "my_tile"
+        assert root.find(".//Attributes[@name='channel']/Channel/name").text == "GFP"
 
-        # Check voxel unit
-        voxel_unit = root.find(".//voxelSize/unit")
-        assert voxel_unit.text == "micrometer"
-
-        # Check tile name
-        tile_name = root.find(".//Attributes[@name='tile']/Tile/name")
-        assert tile_name.text == "my_tile"
-
-        # Check channel name
-        channel_name = root.find(".//Attributes[@name='channel']/Channel/name")
-        assert channel_name.text == "GFP"
-
-        # <ViewInterestPoints> is present but empty when no interest points given
         vip = root.find("ViewInterestPoints")
         assert vip is not None
         assert list(vip) == []
+
+
+def test_create_bigstitcher_dataset_3d_native():
+    """3D input produces native 3D zarr arrays and indicies='[]' in the XML."""
+    tile = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=tmpdir,
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB",
+        )
+
+        # Verify indicies="[]" in the XML (3D native, no TCZYX indexing)
+        root = ET.parse(output_path / "dataset.xml").getroot()
+        zgroup = root.find(".//zgroup")
+        assert zgroup is not None
+        assert zgroup.get("indicies") == "[]"
+
+        # Verify the zarr level 0 is written as 3D (z, y, x), not 5D
+        store = zarr.open(output_path / "dataset.zarr", mode='r')
+        level0 = store["tile_0.zarr"]["0"]
+        assert level0.ndim == 3
+
+
+def test_create_bigstitcher_dataset_multichannel():
+    """4D input (c, z, y, x) creates one ViewSetup per channel."""
+    # 2 channels, z=10, y=32, x=32
+    tile = np.random.randint(0, 255, size=(2, 10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=tmpdir,
+            channel_names=["DAPI", "GFP"],
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB",
+        )
+
+        root = ET.parse(output_path / "dataset.xml").getroot()
+
+        # One ViewSetup per channel
+        setups = root.findall(".//ViewSetup")
+        assert len(setups) == 2
+
+        # Two channels declared
+        channels = root.findall(".//Attributes[@name='channel']/Channel")
+        assert len(channels) == 2
+        names = {ch.find("name").text for ch in channels}
+        assert names == {"DAPI", "GFP"}
+
+        # indicies encode channel index ("0 0" and "0 1")
+        zgroups = root.findall(".//zgroup")
+        indices_vals = {zg.get("indicies") for zg in zgroups}
+        assert "0 0" in indices_vals
+        assert "0 1" in indices_vals
+
+        # Data written as 5D zarr
+        store = zarr.open(output_path / "dataset.zarr", mode='r')
+        level0 = store["tile_0.zarr"]["0"]
+        assert level0.ndim == 5
+
+
+def test_create_bigstitcher_dataset_calibration_affine():
+    """ViewRegistration calibration affine encodes voxel_size on the diagonal."""
+    tile = np.zeros((10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.259, 0.259, 1.0),
+            output_folder=tmpdir,
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB",
+        )
+
+        root = ET.parse(output_path / "dataset.xml").getroot()
+        affine = root.find(".//ViewTransform[@type='affine']/affine")
+        assert affine is not None
+        assert affine.text == "0.259 0.0 0.0 0.0 0.0 0.259 0.0 0.0 0.0 0.0 1.0 0.0"
+
+
+def test_create_bigstitcher_dataset_mismatched_ndim_raises():
+    """Mixing input arrays with different numbers of dimensions raises ValueError."""
+    arr3d = np.zeros((10, 32, 32), dtype=np.uint8)
+    arr5d = np.zeros((1, 1, 10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(ValueError, match="dimensions"):
+            create_bigstitcher_dataset(
+                zarr_arrays=[arr3d, arr5d],
+                voxel_size=(1.0, 1.0, 1.0),
+                output_folder=tmpdir,
+                downsampling_factors=[(2, 2, 2)],
+                n_workers=1,
+                threads_per_worker=1,
+                memory_limit="1GB",
+            )
 
 
 # ─── _read_base_shape ────────────────────────────────────────────────────────
@@ -215,8 +308,7 @@ def test_read_base_shape_from_multiscales_metadata():
         grp.create_dataset("0", data=np.zeros((10, 32, 32), dtype=np.uint8))
         grp.attrs["multiscales"] = [{"datasets": [{"path": "0"}]}]
 
-        shape = _read_base_shape(grp)
-        assert shape == (10, 32, 32)
+        assert _read_base_shape(grp) == (10, 32, 32)
 
 
 def test_read_base_shape_fallback_to_level_0():
@@ -225,8 +317,7 @@ def test_read_base_shape_fallback_to_level_0():
         grp = zarr.open_group(tmpdir, mode='w')
         grp.create_dataset("0", data=np.zeros((5, 16, 16), dtype=np.uint8))
 
-        shape = _read_base_shape(grp)
-        assert shape == (5, 16, 16)
+        assert _read_base_shape(grp) == (5, 16, 16)
 
 
 def test_read_base_shape_fallback_to_s0():
@@ -235,15 +326,13 @@ def test_read_base_shape_fallback_to_s0():
         grp = zarr.open_group(tmpdir, mode='w')
         grp.create_dataset("s0", data=np.zeros((8, 64, 64), dtype=np.uint8))
 
-        shape = _read_base_shape(grp)
-        assert shape == (8, 64, 64)
+        assert _read_base_shape(grp) == (8, 64, 64)
 
 
 def test_read_base_shape_raises_on_unrecognized_structure():
     """Raises ValueError when the group has no recognizable shape source."""
     with tempfile.TemporaryDirectory() as tmpdir:
         grp = zarr.open_group(tmpdir, mode='w')
-        # Only an unrecognized subgroup, no metadata
         grp.require_group("raw_data")
 
         with pytest.raises(ValueError, match="Cannot determine shape"):
@@ -254,8 +343,7 @@ def test_read_base_shape_raises_on_unrecognized_structure():
 
 def test_parse_interest_points_n5_missing_path_returns_empty():
     """Returns an empty list when the n5 path does not exist."""
-    entries = _parse_interest_points_n5("/nonexistent/path/interestpoints.n5")
-    assert entries == []
+    assert _parse_interest_points_n5("/nonexistent/path/interestpoints.n5") == []
 
 
 def test_parse_interest_points_n5_single_entry():
@@ -297,7 +385,6 @@ def test_parse_interest_points_n5_ignores_unexpected_group_names():
     with tempfile.TemporaryDirectory() as tmpdir:
         n5_path = Path(tmpdir) / "interestpoints.n5"
         _make_n5_interest_points(n5_path, [(0, 0, "beads")])
-        # Add an extra group with an unrecognized name
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
             store = zarr.N5Store(str(n5_path))
@@ -315,10 +402,10 @@ def test_write_dataset_xml_interest_points_none_produces_empty_element():
     """<ViewInterestPoints> is present but empty when interest_points=None."""
     with tempfile.TemporaryDirectory() as tmpdir:
         xml_path = Path(tmpdir) / "dataset.xml"
-        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer",
+                           _VOXEL_SIZE, ["ch0"])
 
-        root = ET.parse(xml_path).getroot()
-        vip = root.find("ViewInterestPoints")
+        vip = ET.parse(xml_path).getroot().find("ViewInterestPoints")
         assert vip is not None
         assert list(vip) == []
 
@@ -327,11 +414,10 @@ def test_write_dataset_xml_interest_points_empty_list_produces_empty_element():
     """<ViewInterestPoints> is empty when interest_points=[]."""
     with tempfile.TemporaryDirectory() as tmpdir:
         xml_path = Path(tmpdir) / "dataset.xml"
-        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"],
-                           interest_points=[])
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer",
+                           _VOXEL_SIZE, ["ch0"], interest_points=[])
 
-        root = ET.parse(xml_path).getroot()
-        vip = root.find("ViewInterestPoints")
+        vip = ET.parse(xml_path).getroot().find("ViewInterestPoints")
         assert vip is not None
         assert list(vip) == []
 
@@ -347,8 +433,8 @@ def test_write_dataset_xml_interest_points_written_correctly():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         xml_path = Path(tmpdir) / "dataset.xml"
-        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"],
-                           interest_points=ip_entries)
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer",
+                           _VOXEL_SIZE, ["ch0"], interest_points=ip_entries)
 
         root = ET.parse(xml_path).getroot()
         vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
@@ -362,8 +448,7 @@ def test_write_dataset_xml_interest_points_written_correctly():
         assert first.text == "tpId_0_viewSetupId_0/beads"
 
         # Missing 'params' key defaults to "manual"
-        second = vip_files[1]
-        assert second.get("params") == "manual"
+        assert vip_files[1].get("params") == "manual"
 
 
 # ─── add_interest_points_to_xml ──────────────────────────────────────────────
@@ -373,13 +458,15 @@ def test_add_interest_points_to_xml_populates_view_interest_points():
     with tempfile.TemporaryDirectory() as tmpdir:
         xml_path = Path(tmpdir) / "dataset.xml"
         n5_path = Path(tmpdir) / "interestpoints.n5"
-        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer",
+                           _VOXEL_SIZE, ["ch0"])
         _make_n5_interest_points(n5_path, [(0, 0, "beads")])
 
         add_interest_points_to_xml(xml_path, n5_path)
 
-        root = ET.parse(xml_path).getroot()
-        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        vip_files = ET.parse(xml_path).getroot().findall(
+            "ViewInterestPoints/ViewInterestPointsFile"
+        )
         assert len(vip_files) == 1
         assert vip_files[0].get("label") == "beads"
         assert vip_files[0].get("timepoint") == "0"
@@ -392,18 +479,19 @@ def test_add_interest_points_to_xml_replaces_existing_entries():
         xml_path = Path(tmpdir) / "dataset.xml"
         n5_first = Path(tmpdir) / "ip_first.n5"
         n5_second = Path(tmpdir) / "ip_second.n5"
-        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer",
+                           _VOXEL_SIZE, ["ch0"])
         _make_n5_interest_points(n5_first, [(0, 0, "blobs")])
         _make_n5_interest_points(n5_second, [(0, 0, "beads"), (0, 1, "beads")])
 
         add_interest_points_to_xml(xml_path, n5_first)
         add_interest_points_to_xml(xml_path, n5_second)
 
-        root = ET.parse(xml_path).getroot()
-        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        vip_files = ET.parse(xml_path).getroot().findall(
+            "ViewInterestPoints/ViewInterestPointsFile"
+        )
         assert len(vip_files) == 2
-        labels = {el.get("label") for el in vip_files}
-        assert labels == {"beads"}
+        assert {el.get("label") for el in vip_files} == {"beads"}
 
 
 def test_add_interest_points_to_xml_raises_if_element_missing():
@@ -422,18 +510,18 @@ def test_add_interest_points_to_xml_empty_when_n5_missing():
     """When the n5 path does not exist, <ViewInterestPoints> is left empty."""
     with tempfile.TemporaryDirectory() as tmpdir:
         xml_path = Path(tmpdir) / "dataset.xml"
-        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer", ["ch0"])
+        _write_dataset_xml(xml_path, _VIEW_SETUPS, _ZGROUPS, "micrometer",
+                           _VOXEL_SIZE, ["ch0"])
 
         add_interest_points_to_xml(xml_path, Path(tmpdir) / "nonexistent.n5")
 
-        root = ET.parse(xml_path).getroot()
-        assert list(root.find("ViewInterestPoints")) == []
+        assert list(ET.parse(xml_path).getroot().find("ViewInterestPoints")) == []
 
 
 # ─── create_bigstitcher_dataset_symlinked ────────────────────────────────────
 
 def test_create_bigstitcher_dataset_symlinked_creates_symlinks():
-    """Symlinks are created pointing to source zarr paths; no data is copied."""
+    """Symlinks point to source zarr paths; no data is copied."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src0 = _make_source_zarr(Path(tmpdir) / "src0.zarr")
         src1 = _make_source_zarr(Path(tmpdir) / "src1.zarr")
@@ -445,8 +533,8 @@ def test_create_bigstitcher_dataset_symlinked_creates_symlinks():
             output_folder=out,
         )
 
-        link0 = out / "dataset.zarr" / "s0-t0.zarr"
-        link1 = out / "dataset.zarr" / "s1-t0.zarr"
+        link0 = out / "dataset.zarr" / "tile_0.zarr"
+        link1 = out / "dataset.zarr" / "tile_1.zarr"
         assert link0.is_symlink()
         assert link1.is_symlink()
         assert link0.resolve() == src0.resolve()
@@ -459,7 +547,7 @@ def test_create_bigstitcher_dataset_symlinked_replaces_existing_symlink():
         src = _make_source_zarr(Path(tmpdir) / "src.zarr")
         out = Path(tmpdir) / "out"
         (out / "dataset.zarr").mkdir(parents=True)
-        stale_link = out / "dataset.zarr" / "s0-t0.zarr"
+        stale_link = out / "dataset.zarr" / "tile_0.zarr"
         stale_link.symlink_to("/nonexistent/stale")
 
         create_bigstitcher_dataset_symlinked(
@@ -510,10 +598,11 @@ def test_create_bigstitcher_dataset_symlinked_default_names():
         )
 
         root = ET.parse(out / "dataset.xml").getroot()
-        tile_names = [el.text for el in root.findall(".//Attributes[@name='tile']/Tile/name")]
+        tile_names = [
+            el.text for el in root.findall(".//Attributes[@name='tile']/Tile/name")
+        ]
         assert tile_names == ["tile_0", "tile_1"]
-        channel_name = root.find(".//Attributes[@name='channel']/Channel/name").text
-        assert channel_name == "channel_0"
+        assert root.find(".//Attributes[@name='channel']/Channel/name").text == "channel_0"
 
 
 def test_create_bigstitcher_dataset_symlinked_with_interest_points():
@@ -532,8 +621,9 @@ def test_create_bigstitcher_dataset_symlinked_with_interest_points():
             interest_points_n5=n5_path,
         )
 
-        root = ET.parse(out / "dataset.xml").getroot()
-        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        vip_files = ET.parse(out / "dataset.xml").getroot().findall(
+            "ViewInterestPoints/ViewInterestPointsFile"
+        )
         assert len(vip_files) == 1
         assert vip_files[0].get("label") == "beads"
 
@@ -550,11 +640,30 @@ def test_create_bigstitcher_dataset_symlinked_without_interest_points():
             output_folder=out,
         )
 
+        assert list(
+            ET.parse(out / "dataset.xml").getroot().find("ViewInterestPoints")
+        ) == []
+
+
+def test_create_bigstitcher_dataset_symlinked_3d_indicies():
+    """3D source zarr produces indicies='[]' in the XML."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")  # shape (10,32,32), ndim=3
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+        )
+
         root = ET.parse(out / "dataset.xml").getroot()
-        assert list(root.find("ViewInterestPoints")) == []
+        zgroup = root.find(".//zgroup")
+        assert zgroup is not None
+        assert zgroup.get("indicies") == "[]"
 
 
-# ─── create_bigstitcher_dataset — new interest_points_n5 parameter ───────────
+# ─── create_bigstitcher_dataset — interest_points_n5 ─────────────────────────
 
 def test_create_bigstitcher_dataset_with_interest_points_n5():
     """<ViewInterestPoints> is populated when interest_points_n5 is passed."""
@@ -577,8 +686,8 @@ def test_create_bigstitcher_dataset_with_interest_points_n5():
             interest_points_n5=n5_path,
         )
 
-        root = ET.parse(output_path / "dataset.xml").getroot()
-        vip_files = root.findall("ViewInterestPoints/ViewInterestPointsFile")
+        vip_files = ET.parse(output_path / "dataset.xml").getroot().findall(
+            "ViewInterestPoints/ViewInterestPointsFile"
+        )
         assert len(vip_files) == 2
-        labels = {el.get("label") for el in vip_files}
-        assert labels == {"beads", "blobs"}
+        assert {el.get("label") for el in vip_files} == {"beads", "blobs"}
