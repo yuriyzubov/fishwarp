@@ -873,21 +873,36 @@ def add_interest_points_to_xml(
     interest_points_n5: Union[str, Path],
 ) -> None:
     """
-    Append interest points from an existing interestpoints.n5 into an existing dataset.xml.
+    Patch an existing ``dataset.xml`` with interest points from an n5 store.
 
-    Replaces the contents of the <ViewInterestPoints> element in-place.
-    The XML file is updated directly; all other sections are left untouched.
+    The ``<ViewInterestPoints>`` element is **replaced** (not appended to) with
+    ``<ViewInterestPointsFile>`` entries discovered in *interest_points_n5*.
+    All other sections of the XML — registrations, view setups, image loader,
+    etc. — are left untouched.
+
+    The n5 store is expected to contain groups named
+    ``tpId_{tp}_viewSetupId_{setup}/{label}``, which is the layout written by
+    BigStitcher's interest-point detection step.  If *interest_points_n5* does
+    not exist, ``<ViewInterestPoints>`` is cleared and the XML is written back
+    with an empty element (no error is raised).
 
     Parameters
     ----------
     xml_path : str or Path
-        Path to the existing BigStitcher dataset.xml to update.
-
+        Path to the existing BigStitcher ``dataset.xml`` to update.
     interest_points_n5 : str or Path
-        Path to the interestpoints.n5 directory to parse.
+        Path to the ``interestpoints.n5`` directory produced by BigStitcher.
+        If the path does not exist the function prints a warning and writes
+        back an empty ``<ViewInterestPoints>`` element.
+
+    Raises
+    ------
+    ValueError
+        If *xml_path* does not contain a ``<ViewInterestPoints>`` element.
 
     Examples
     --------
+    >>> from bigstitcher.to_bigstitcher import add_interest_points_to_xml
     >>> add_interest_points_to_xml(
     ...     xml_path="./my_dataset/dataset.xml",
     ...     interest_points_n5="./my_dataset/interestpoints.n5",
@@ -898,33 +913,31 @@ def add_interest_points_to_xml(
     xml_path = Path(xml_path)
 
     entries = _parse_interest_points_n5(interest_points_n5)
-    print(f"Found {len(entries)} interest point entries in {interest_points_n5}")
+    print(f"Found {len(entries)} interest point entries.")
 
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    vip = root.find('ViewInterestPoints')
+    vip = root.find("ViewInterestPoints")
     if vip is None:
         raise ValueError(f"<ViewInterestPoints> element not found in {xml_path}")
 
-    # Clear existing entries and repopulate
     vip.clear()
     for entry in entries:
-        el = ET.SubElement(vip, 'ViewInterestPointsFile')
-        el.set('timepoint', str(entry['timepoint']))
-        el.set('setup', str(entry['setup']))
-        el.set('label', entry['label'])
-        el.set('params', entry.get('params', 'manual'))
-        el.text = entry['path']
+        el = ET.SubElement(vip, "ViewInterestPointsFile")
+        el.set("timepoint", str(entry["timepoint"]))
+        el.set("setup", str(entry["setup"]))
+        el.set("label", entry["label"])
+        el.set("params", entry.get("params", "manual"))
+        el.text = entry["path"]
 
-    # Write back with pretty printing
     xml_str = minidom.parseString(
-        ET.tostring(root, encoding='unicode')
-    ).toprettyxml(indent='  ')
-    lines = [line for line in xml_str.split('\n') if line.strip()]
-    xml_str = '\n'.join(lines)
+        ET.tostring(root, encoding="unicode")
+    ).toprettyxml(indent="  ")
+    lines = [line for line in xml_str.split("\n") if line.strip()]
+    xml_str = "\n".join(lines)
 
-    with open(xml_path, 'w', encoding='UTF-8') as f:
+    with open(xml_path, "w", encoding="UTF-8") as f:
         f.write(xml_str)
 
     print(f"Updated {xml_path} with {len(entries)} interest point entries.")
