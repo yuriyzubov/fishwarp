@@ -281,6 +281,24 @@ def test_create_bigstitcher_dataset_calibration_affine():
         assert affine.text == "0.259 0.0 0.0 0.0 0.0 0.259 0.0 0.0 0.0 0.0 1.0 0.0"
 
 
+def test_create_bigstitcher_dataset_mismatched_ndim_raises():
+    """Mixing input arrays with different numbers of dimensions raises ValueError."""
+    arr3d = np.zeros((10, 32, 32), dtype=np.uint8)
+    arr5d = np.zeros((1, 1, 10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(ValueError, match="dimensions"):
+            create_bigstitcher_dataset(
+                zarr_arrays=[arr3d, arr5d],
+                voxel_size=(1.0, 1.0, 1.0),
+                output_folder=tmpdir,
+                downsampling_factors=[(2, 2, 2)],
+                n_workers=1,
+                threads_per_worker=1,
+                memory_limit="1GB",
+            )
+
+
 # ─── _read_base_shape ────────────────────────────────────────────────────────
 
 def test_read_base_shape_from_multiscales_metadata():
