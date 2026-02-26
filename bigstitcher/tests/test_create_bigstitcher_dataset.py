@@ -645,6 +645,24 @@ def test_create_bigstitcher_dataset_symlinked_without_interest_points():
         ) == []
 
 
+def test_create_bigstitcher_dataset_symlinked_3d_indicies():
+    """3D source zarr produces indicies='[]' in the XML."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = _make_source_zarr(Path(tmpdir) / "src.zarr")  # shape (10,32,32), ndim=3
+        out = Path(tmpdir) / "out"
+
+        create_bigstitcher_dataset_symlinked(
+            zarr_paths=[src],
+            voxel_size=(1.0, 1.0, 1.0),
+            output_folder=out,
+        )
+
+        root = ET.parse(out / "dataset.xml").getroot()
+        zgroup = root.find(".//zgroup")
+        assert zgroup is not None
+        assert zgroup.get("indicies") == "[]"
+
+
 # ─── create_bigstitcher_dataset — interest_points_n5 ─────────────────────────
 
 def test_create_bigstitcher_dataset_with_interest_points_n5():
