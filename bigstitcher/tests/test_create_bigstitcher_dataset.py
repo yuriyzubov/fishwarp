@@ -192,6 +192,33 @@ def test_create_bigstitcher_dataset_xml_content():
         assert list(vip) == []
 
 
+def test_create_bigstitcher_dataset_3d_native():
+    """3D input produces native 3D zarr arrays and indicies='[]' in the XML."""
+    tile = np.random.randint(0, 255, size=(10, 32, 32), dtype=np.uint8)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = create_bigstitcher_dataset(
+            zarr_arrays=[tile],
+            voxel_size=(0.5, 0.5, 1.0),
+            output_folder=tmpdir,
+            downsampling_factors=[(2, 2, 2)],
+            n_workers=1,
+            threads_per_worker=1,
+            memory_limit="1GB",
+        )
+
+        # Verify indicies="[]" in the XML (3D native, no TCZYX indexing)
+        root = ET.parse(output_path / "dataset.xml").getroot()
+        zgroup = root.find(".//zgroup")
+        assert zgroup is not None
+        assert zgroup.get("indicies") == "[]"
+
+        # Verify the zarr level 0 is written as 3D (z, y, x), not 5D
+        store = zarr.open(output_path / "dataset.zarr", mode='r')
+        level0 = store["tile_0.zarr"]["0"]
+        assert level0.ndim == 3
+
+
 # ─── _read_base_shape ────────────────────────────────────────────────────────
 
 def test_read_base_shape_from_multiscales_metadata():
