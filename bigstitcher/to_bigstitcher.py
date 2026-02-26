@@ -520,20 +520,24 @@ def _normalize_dask_array(
     return arr
 
 
-def _downsample_dask_array(arr: da.Array, factor: Tuple[int, int, int]) -> da.Array:
-    """Downsample a 5D dask array by the given factors (z, y, x), preserving dtype."""
+def _downsample_dask_array(
+    arr: da.Array,
+    factor: Tuple[int, int, int],
+) -> da.Array:
+    """
+    Downsample a 3-D or 5-D dask array by ``(fz, fy, fx)`` using block mean.
+
+    Preserves the original dtype.
+    """
     fz, fy, fx = factor
     original_dtype = arr.dtype
 
-    # Use dask coarsen for efficient downsampling with mean aggregation
-    coarsened = da.coarsen(
-        np.mean,
-        arr,
-        {2: fz, 3: fy, 4: fx},  # Axes: t=0, c=1, z=2, y=3, x=4
-        trim_excess=True
-    )
+    if arr.ndim == 3:
+        axes = {0: fz, 1: fy, 2: fx}
+    else:  # 5D
+        axes = {2: fz, 3: fy, 4: fx}
 
-    # Cast back to original dtype to preserve data type consistency
+    coarsened = da.coarsen(np.mean, arr, axes, trim_excess=True)
     return coarsened.astype(original_dtype)
 
 
