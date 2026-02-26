@@ -559,6 +559,50 @@ def _get_compressor(compression: str, compression_level: int):
     return None
 
 
+def _write_resolution_level_3d(
+    view_group: zarr.Group,
+    level: int,
+    dask_data: da.Array,
+    chunk_size: Tuple[int, int, int],
+    compressor,
+    downsampling_factor: Tuple[int, int, int],
+) -> zarr.Array:
+    """
+    Write one 3-D resolution level ``(z, y, x)`` into *view_group*.
+
+    Returns the written ``zarr.Array`` so callers can reload it to break the
+    dask computation chain between pyramid levels.
+    """
+    z, y, x = dask_data.shape
+    chunks = (
+        min(chunk_size[0], z),
+        min(chunk_size[1], y),
+        min(chunk_size[2], x),
+    )
+
+    level_path = os.path.join(view_group.store.path, view_group.path, str(level))
+    level_arr = zarr.open_array(
+        level_path,
+        mode="w",
+        shape=(z, y, x),
+        chunks=chunks,
+        dtype=dask_data.dtype,
+        compressor=compressor,
+        dimension_separator="/",
+        fill_value=0,
+        filters=[],
+        order="C",
+    )
+
+    da.to_zarr(dask_data.rechunk(chunks), level_arr, overwrite=True, compute=True)
+
+    if level > 0:
+        fz, fy, fx = downsampling_factor
+        level_arr.attrs["downsamplingFactors"] = [fz, fy, fx]
+
+    return level_arr
+
+
 def _write_resolution_level_dask(
     view_group: zarr.Group,
     level: int,
@@ -716,6 +760,81 @@ def _write_multiscale_metadata(
         }]
 
     view_group.attrs["multiscales"] = multiscales
+
+
+# ── Private helpers: full-tile writers ───────────────────────────────────────
+
+
+def _write_tile_3d(
+    view_group: zarr.Group,
+    dask_data: da.Array,
+    downsampling_factors: List[Tuple[int, int, int]],
+    chunk_size: Tuple[int, int, int],
+    compressor,
+    voxel_size: Tuple[float, float, float],
+    voxel_unit: str,
+) -> None:
+    """Write a full 3-D multi-resolution pyramid for one tile."""
+    z, y, x = dask_data.shape
+
+    print("  Writing level 0 (full resolution, 3D)…")
+    _write_resolution_level_3d(
+        view_group, 0, dask_data, chunk_size, compressor, (1, 1, 1)
+    )
+
+    current_data = dask_data
+    prev_factor = (1, 1, 1)
+    for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
+        rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
+        print(f"  Writing level {level_idx} (downsample {rel_factor} from level"
+              f" {level_idx - 1})…")
+        downsampled = _downsample_dask_array(current_data, rel_factor)
+        prev_factor = ds_factor
+        written_arr = _write_resolution_level_3d(
+            view_group, level_idx, downsampled, chunk_size, compressor, ds_factor
+        )
+        current_data = da.from_zarr(written_arr)
+
+    _write_multiscale_metadata(
+        view_group, (z, y, x), downsampling_factors, voxel_size, voxel_unit,
+        ndim=3,
+    )
+
+
+def _write_tile_5d(
+    view_group: zarr.Group,
+    dask_data: da.Array,
+    downsampling_factors: List[Tuple[int, int, int]],
+    chunk_size: Tuple[int, int, int],
+    compressor,
+    voxel_size: Tuple[float, float, float],
+    voxel_unit: str,
+) -> None:
+    """Write a full 5-D ``(t, c, z, y, x)`` multi-resolution pyramid for one tile."""
+    t, c, z, y, x = dask_data.shape
+
+    print("  Writing level 0 (full resolution, 5D)…")
+    _write_resolution_level_dask(
+        view_group, 0, dask_data, chunk_size, compressor, (1, 1, 1)
+    )
+
+    current_data = dask_data
+    prev_factor = (1, 1, 1)
+    for level_idx, ds_factor in enumerate(downsampling_factors, start=1):
+        rel_factor = tuple(ds_factor[i] // prev_factor[i] for i in range(3))
+        print(f"  Writing level {level_idx} (downsample {rel_factor} from level"
+              f" {level_idx - 1})…")
+        downsampled = _downsample_dask_array(current_data, rel_factor)
+        prev_factor = ds_factor
+        written_arr = _write_resolution_level_dask(
+            view_group, level_idx, downsampled, chunk_size, compressor, ds_factor
+        )
+        current_data = da.from_zarr(written_arr)
+
+    _write_multiscale_metadata(
+        view_group, (z, y, x), downsampling_factors, voxel_size, voxel_unit,
+        ndim=5,
+    )
 
 
 def add_interest_points_to_xml(
