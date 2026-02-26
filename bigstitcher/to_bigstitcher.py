@@ -619,52 +619,103 @@ def _write_multiscale_metadata(
     base_shape: Tuple[int, int, int],
     downsampling_factors: List[Tuple[int, int, int]],
     voxel_size: Tuple[float, float, float],
-    voxel_unit: str
+    voxel_unit: str,
+    ndim: int = 5,
 ) -> None:
-    """Write OME-Zarr multiscale metadata to the view group."""
-    vx, vy, vz = voxel_size
+    """
+    Write OME-Zarr ``multiscales`` metadata to a view group.
+
+    Parameters
+    ----------
+    ndim : {3, 5}
+        3 for native 3-D zarr groups, 5 for 5-D (t, c, z, y, x) groups.
+    """
     z, y, x = base_shape
 
-    # Build datasets list
-    datasets = [
-        {
-            "path": "0",
-            "coordinateTransformations": [
-                {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"},
-                {"translation": [0.0, 0.0, 0.0, 0.0, 0.0], "type": "translation"}
-            ]
-        }
-    ]
+    if ndim == 3:
+        axes = [
+            {"type": "space", "name": "z", "unit": voxel_unit, "discrete": False},
+            {"type": "space", "name": "y", "unit": voxel_unit, "discrete": False},
+            {"type": "space", "name": "x", "unit": voxel_unit, "discrete": False},
+        ]
+        base_scale = [1.0, 1.0, 1.0]
+        base_translation = [0.0, 0.0, 0.0]
+        global_scale = [1.0, 1.0, 1.0]
 
-    for i, (fz, fy, fx) in enumerate(downsampling_factors, start=1):
-        datasets.append({
-            "path": str(i),
-            "coordinateTransformations": [
-                {"scale": [1.0, 1.0, float(fz), float(fy), float(fx)], "type": "scale"},
-                {"translation": [0.0, 0.0, (fz-1)/2.0, (fy-1)/2.0, (fx-1)/2.0], "type": "translation"}
-            ]
-        })
+        datasets = [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"scale": base_scale, "type": "scale"},
+                    {"translation": base_translation, "type": "translation"},
+                ],
+            }
+        ]
+        for i, (fz, fy, fx) in enumerate(downsampling_factors, start=1):
+            datasets.append({
+                "path": str(i),
+                "coordinateTransformations": [
+                    {"scale": [float(fz), float(fy), float(fx)], "type": "scale"},
+                    {"translation": [(fz - 1) / 2.0, (fy - 1) / 2.0, (fx - 1) / 2.0],
+                     "type": "translation"},
+                ],
+            })
 
-    multiscales = [{
-        "name": "/",
-        "version": "0.4",
-        "axes": [
+        multiscales = [{
+            "name": "/",
+            "version": "0.4",
+            "axes": axes,
+            "datasets": datasets,
+            "coordinateTransformations": [{"scale": global_scale, "type": "scale"}],
+            "basePath": "",
+            "paths": [str(i) for i in range(len(downsampling_factors) + 1)],
+            "units": [voxel_unit] * 3,
+        }]
+
+    else:  # ndim == 5
+        axes = [
             {"type": "time", "name": "t", "unit": "millisecond", "discrete": False},
             {"type": "channel", "name": "c", "discrete": False},
             {"type": "space", "name": "z", "unit": voxel_unit, "discrete": False},
             {"type": "space", "name": "y", "unit": voxel_unit, "discrete": False},
-            {"type": "space", "name": "x", "unit": voxel_unit, "discrete": False}
-        ],
-        "datasets": datasets,
-        "coordinateTransformations": [
-            {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"}
-        ],
-        "basePath": "",
-        "paths": [str(i) for i in range(len(downsampling_factors) + 1)],
-        "units": [voxel_unit] * 5
-    }]
+            {"type": "space", "name": "x", "unit": voxel_unit, "discrete": False},
+        ]
 
-    view_group.attrs['multiscales'] = multiscales
+        datasets = [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"},
+                    {"translation": [0.0, 0.0, 0.0, 0.0, 0.0], "type": "translation"},
+                ],
+            }
+        ]
+        for i, (fz, fy, fx) in enumerate(downsampling_factors, start=1):
+            datasets.append({
+                "path": str(i),
+                "coordinateTransformations": [
+                    {"scale": [1.0, 1.0, float(fz), float(fy), float(fx)],
+                     "type": "scale"},
+                    {"translation": [0.0, 0.0, (fz - 1) / 2.0, (fy - 1) / 2.0,
+                                     (fx - 1) / 2.0],
+                     "type": "translation"},
+                ],
+            })
+
+        multiscales = [{
+            "name": "/",
+            "version": "0.4",
+            "axes": axes,
+            "datasets": datasets,
+            "coordinateTransformations": [
+                {"scale": [1.0, 1.0, 1.0, 1.0, 1.0], "type": "scale"}
+            ],
+            "basePath": "",
+            "paths": [str(i) for i in range(len(downsampling_factors) + 1)],
+            "units": [voxel_unit] * 5,
+        }]
+
+    view_group.attrs["multiscales"] = multiscales
 
 
 def add_interest_points_to_xml(
