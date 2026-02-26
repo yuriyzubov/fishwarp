@@ -7,26 +7,27 @@ from pathlib import Path
 from bigstitcher.to_bigstitcher import _write_dataset_xml
 
 
-# Sample test data
+# Sample test data (ViewSetups are unique per tile×channel — no 'timepoint' key)
 SAMPLE_VIEW_SETUPS = [
     {
-        'id': 0, 'name': 's0-t0', 'size': (512, 512, 100),
+        'id': 0, 'name': 'tile_0', 'size': (512, 512, 100),
         'voxel_size': (0.5, 0.5, 1.0), 'tile_id': 0,
-        'tile_name': 'tile_0', 'channel_id': 0, 'timepoint': 0
+        'tile_name': 'tile_0', 'channel_id': 0,
     },
     {
-        'id': 1, 'name': 's1-t0', 'size': (512, 512, 100),
+        'id': 1, 'name': 'tile_1', 'size': (512, 512, 100),
         'voxel_size': (0.5, 0.5, 1.0), 'tile_id': 1,
-        'tile_name': 'tile_1', 'channel_id': 0, 'timepoint': 0
+        'tile_name': 'tile_1', 'channel_id': 0,
     },
 ]
 
 SAMPLE_ZGROUPS = [
-    {'setup': 0, 'tp': 0, 'path': 's0-t0.zarr', 'indices': '0 0'},
-    {'setup': 1, 'tp': 0, 'path': 's1-t0.zarr', 'indices': '0 0'},
+    {'setup': 0, 'tp': 0, 'path': 'tile_0.zarr', 'indices': '0 0'},
+    {'setup': 1, 'tp': 0, 'path': 'tile_1.zarr', 'indices': '0 0'},
 ]
 
-# Expected XML output
+# Expected XML output.
+# Calibration affine encodes voxel_size=(0.5, 0.5, 1.0) on the diagonal.
 EXPECTED_XML = """\
 <?xml version="1.0" ?>
 <SpimData version="0.2">
@@ -35,14 +36,14 @@ EXPECTED_XML = """\
     <ImageLoader format="bdv.multimg.zarr" version="3.0">
       <zarr type="relative">dataset.zarr</zarr>
       <zgroups>
-        <zgroup setup="0" tp="0" path="s0-t0.zarr" indicies="0 0"/>
-        <zgroup setup="1" tp="0" path="s1-t0.zarr" indicies="0 0"/>
+        <zgroup setup="0" tp="0" path="tile_0.zarr" indicies="0 0"/>
+        <zgroup setup="1" tp="0" path="tile_1.zarr" indicies="0 0"/>
       </zgroups>
     </ImageLoader>
     <ViewSetups>
       <ViewSetup>
         <id>0</id>
-        <name>s0-t0</name>
+        <name>tile_0</name>
         <size>512 512 100</size>
         <voxelSize>
           <unit>micrometer</unit>
@@ -57,7 +58,7 @@ EXPECTED_XML = """\
       </ViewSetup>
       <ViewSetup>
         <id>1</id>
-        <name>s1-t0</name>
+        <name>tile_1</name>
         <size>512 512 100</size>
         <voxelSize>
           <unit>micrometer</unit>
@@ -108,13 +109,13 @@ EXPECTED_XML = """\
     <ViewRegistration timepoint="0" setup="0">
       <ViewTransform type="affine">
         <Name>calibration</Name>
-        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+        <affine>0.5 0.0 0.0 0.0 0.0 0.5 0.0 0.0 0.0 0.0 1.0 0.0</affine>
       </ViewTransform>
     </ViewRegistration>
     <ViewRegistration timepoint="0" setup="1">
       <ViewTransform type="affine">
         <Name>calibration</Name>
-        <affine>1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0</affine>
+        <affine>0.5 0.0 0.0 0.0 0.0 0.5 0.0 0.0 0.0 0.0 1.0 0.0</affine>
       </ViewTransform>
     </ViewRegistration>
   </ViewRegistrations>
@@ -132,7 +133,7 @@ def test_write_dataset_xml_output():
         xml_path = Path(tmpdir) / 'dataset.xml'
         _write_dataset_xml(
             xml_path, SAMPLE_VIEW_SETUPS, SAMPLE_ZGROUPS,
-            'micrometer', ['channel_0']
+            'micrometer', (0.5, 0.5, 1.0), ['channel_0']
         )
 
         with open(xml_path, 'r') as f:
