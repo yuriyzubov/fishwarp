@@ -17,6 +17,7 @@ Outputs:
 
 import logging
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -54,3 +55,31 @@ def bbox_overlap(a: np.ndarray, b: np.ndarray) -> float:
     inter = vol(lo_i, hi_i)
     union = vol(lo_a, hi_a) + vol(lo_b, hi_b) - inter
     return float(inter / union)
+
+
+# ---------------------------------------------------------------------------
+# Slice PNGs
+# ---------------------------------------------------------------------------
+
+def save_slice_png(fixed: np.ndarray, warped: np.ndarray,
+                   axis: int, out_path) -> None:
+    mid = fixed.shape[axis] // 2
+    sl = [slice(None)] * 3
+    sl[axis] = mid
+    sl = tuple(sl)
+    f = fixed[sl].astype(float)
+    w = warped[sl].astype(float)
+
+    rgb = np.zeros((*f.shape, 3))
+    rgb[..., 0] = np.clip(f, 0, 1)          # fixed → red
+    rgb[..., 1] = np.clip(w, 0, 1)          # warped → green
+    # overlap → yellow (both channels lit)
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.imshow(rgb, origin='lower', interpolation='nearest')
+    ax.axis('off')
+    axis_name = ['z', 'y', 'x'][axis]
+    ax.set_title(f'mid-{axis_name} slice  (red=fixed, green=warped, yellow=overlap)')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    log.info('Saved slice PNG: %s', out_path)
