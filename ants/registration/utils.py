@@ -388,3 +388,27 @@ def warp_binary(moving_binary: np.ndarray, moving_spacing_nm: tuple,
         interpolator='nearestNeighbor',
     )
     return (from_ants(warped) > 0.5).astype(np.uint8)
+
+
+# ---------------------------------------------------------------------------
+# Resampling
+# ---------------------------------------------------------------------------
+
+def downsample(ants_image: ants.ANTsImage, factor: int) -> ants.ANTsImage:
+    """
+    Downsample an ANTs image by an integer factor using block averaging.
+    Each output voxel is the mean of a factor³ input block (anti-aliased, fast).
+    Input is cropped to the nearest multiple of factor before averaging.
+    """
+    arr = ants_image.numpy()
+    z, y, x = arr.shape
+    # Crop to nearest multiple of factor so reshape is exact
+    arr = arr[:z - z % factor, :y - y % factor, :x - x % factor]
+    z, y, x = arr.shape
+    arr_ds = (arr.reshape(z // factor, factor,
+                          y // factor, factor,
+                          x // factor, factor)
+                 .mean(axis=(1, 3, 5))
+                 .astype(np.float32))
+    new_spacing = tuple(s * factor for s in ants_image.spacing)
+    return ants.from_numpy(arr_ds, spacing=new_spacing)
