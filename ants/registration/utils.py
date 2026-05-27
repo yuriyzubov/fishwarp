@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Logging — must be configured before any third-party imports, which may
@@ -35,6 +36,7 @@ log.info('ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS = %s', _n_threads)
 import ants
 import numcodecs
 import numpy as np
+import zarr
 
 _COMPRESSOR = numcodecs.Zstd(level=3)
 _CHUNKS     = (128, 128, 128)
@@ -79,3 +81,29 @@ def to_ants(array: np.ndarray, spacing_nm: tuple) -> ants.ANTsImage:
 def from_ants(ants_image: ants.ANTsImage) -> np.ndarray:
     """Return the numpy array backing an ANTs image (z, y, x ordering preserved)."""
     return ants_image.numpy()
+
+
+# ---------------------------------------------------------------------------
+# Intermediate volume I/O (zarr, zstd-compressed, chunk-aligned)
+# ---------------------------------------------------------------------------
+
+def save_volume(path: Path, array: np.ndarray) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    z = zarr.open_array(
+        str(path),
+        mode='w',
+        shape=array.shape,
+        chunks=_CHUNKS,
+        dtype=array.dtype,
+        compressor=_COMPRESSOR,
+        dimension_separator='/',
+    )
+    z[:] = array
+    log.info('Saved %s  shape=%s  dtype=%s', path, array.shape, array.dtype)
+
+
+def load_volume(path: Path) -> np.ndarray:
+    arr = zarr.open_array(str(path), mode='r')[:]
+    log.info('Loaded %s  shape=%s  dtype=%s', path, arr.shape, arr.dtype)
+    return arr
