@@ -412,3 +412,74 @@ def downsample(ants_image: ants.ANTsImage, factor: int) -> ants.ANTsImage:
                  .astype(np.float32))
     new_spacing = tuple(s * factor for s in ants_image.spacing)
     return ants.from_numpy(arr_ds, spacing=new_spacing)
+
+
+# ---------------------------------------------------------------------------
+# Registration image loader (mode-aware)
+# ---------------------------------------------------------------------------
+
+def load_reg_images(downsample_factor: int = 1):
+    """
+    Load the fixed/moving images used by stages 4/5, dispatched by
+    config.REG_IMAGE_TYPE:
+
+      'sdf'  — native anisotropic SDFs from stage 1 (downsampled and cached
+               on disk so stage 5 can reuse without reloading full-res).
+      'blur' — common-grid isotropic blurred binaries from stage 1b (no
+               downsampling — already small).
+
+    Returns (fixed_ants, moving_ants).
+    """
+    import config
+
+    if config.REG_IMAGE_TYPE == 'blur':
+        fixed_path  = config.INTERMEDIATE / 'fixed_blur.zarr'
+        moving_path = config.INTERMEDIATE / 'moving_blur.zarr'
+        assert fixed_path.exists() and moving_path.exists(), \
+            'Missing blur images — run stage1b_blur first.'
+        spacing_nm = (config.COMMON_GRID_SPACING_UM * 1000,) * 3
+        fixed  = to_ants(load_volume(fixed_path),  spacing_nm)
+        moving = to_ants(load_volume(moving_path), spacing_nm)
+        log.info('Reg images (blur): fixed=%s moving=%s spacing_mm=%s',
+                 fixed.shape, moving.shape, fixed.spacing)
+        return fixed, moving
+
+    if config.REG_IMAGE_TYPE == 'sdf':
+        factor = downsample_factor
+        fixed_ds_path  = config.INTERMEDIATE / 'fixed_sdf_ds.zarr'
+        moving_ds_path = config.INTERMEDIATE / 'moving_sdf_ds.zarr'
+        ds_spacing_fixed  = tuple(s * factor for s in config.FIXED_SPACING_NM)
+        ds_spacing_moving = tuple(s * factor for s in config.MOVING_SPACING_NM)
+
+        if fixed_ds_path.exists() and moving_ds_path.exists():
+            log.info('Loading cached downsampled SDFs (factor=%d)', factor)
+            fixed_ds  = to_ants(load_volume(fixed_ds_path),  ds_spacing_fixed)
+            moving_ds = to_ants(load_volume(moving_ds_path), ds_spacing_moving)
+        else:
+            log.info('Computing and caching downsampled SDFs (factor=%d)', factor)
+            fixed_sdf_path = (
+                config.INTERMEDIATE / 'fixed_sdf_blurred.zarr'
+                if config.ENABLE_STAGE2_BLUR
+                else config.INTERMEDIATE / 'fixed_sdf.zarr'
+            )
+            assert fixed_sdf_path.exists(), f'Missing: {fixed_sdf_path}'
+            assert (config.INTERMEDIATE / 'moving_sdf.zarr').exists(), \
+                'Missing moving_sdf.zarr — run stage1 first'
+
+            fixed_full  = to_ants(load_volume(fixed_sdf_path),
+                                  config.FIXED_SPACING_NM)
+            moving_full = to_ants(load_volume(config.INTERMEDIATE / 'moving_sdf.zarr'),
+                                  config.MOVING_SPACING_NM)
+
+            with timed('downsample fixed SDF'):
+                fixed_ds = downsample(fixed_full, factor)
+            with timed('downsample moving SDF'):
+                moving_ds = downsample(moving_full, factor)
+
+            save_volume(fixed_ds_path,  from_ants(fixed_ds).astype(np.float32))
+            save_volume(moving_ds_path, from_ants(moving_ds).astype(np.float32))
+
+        log.info('Reg images (sdf): fixed=%s moving=%s', fixed_ds.shape, moving_ds.shape)
+        return fixed_ds, moving_ds
+
+    raise ValueError(f'Unknown REG_IMAGE_TYPE: {config.REG_IMAGE_TYPE!r}')
