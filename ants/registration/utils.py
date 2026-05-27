@@ -256,3 +256,107 @@ def binarize_to_zarr(
         'occupancy': occ,
         'elapsed_s': elapsed,
     }
+
+
+# ---------------------------------------------------------------------------
+# Chunked resample onto a common grid: tile the OUTPUT grid, and for each tile
+# read only the small source slab it needs (output bbox mapped back to source
+# index space + halo), resample that slab with ANTs, write into the output
+# array. Never materializes the full source in RAM — same memory win as
+# binarize_to_zarr, but with a halo because resampling is a gather, not an
+# elementwise map. Parallelized with dask.delayed + the threaded scheduler
+# (zarr decompression and ITK resampling release the GIL).
+#
+# Bit-identical to ants.resample_image_to_target(src, ref, 'linear') where ref
+# has origin (0,0,0) and isotropic spacing: each tile builds genuine ANTs
+# sub-images with the correct physical origin, so ANTs maps coordinates the
+# same way it would for the whole volume.
+# ---------------------------------------------------------------------------
+
+def resample_to_grid_chunked(
+    src_zarr,
+    src_spacing_mm: tuple,
+    target_shape: tuple,
+    target_spacing_mm: float,
+    name: str = '',
+    n_workers: int = 16,
+    block_shape: tuple = _CHUNKS,
+    halo: int = 2,
+) -> np.ndarray:
+    """
+    Resample a 3D source zarr onto a common grid (origin (0,0,0), isotropic
+    `target_spacing_mm`, shape `target_shape`) with linear interpolation.
+
+    `src_spacing_mm` is the per-numpy-axis spacing of the source in mm — i.e.
+    the same tuple passed to ants.from_numpy(..., spacing=...) for the source.
+    Source axis a corresponds to output axis a (matching ANTs dimension).
+
+    Returns a float32 numpy array of shape `target_shape`.
+    """
+    import dask
+    from dask import delayed
+
+    src_spacing_mm = tuple(float(s) for s in src_spacing_mm)
+    # input voxels per output voxel, per axis
+    ratio = tuple(target_spacing_mm / s for s in src_spacing_mm)
+    out = np.zeros(target_shape, dtype=np.float32)
+
+    tz, ty, tx = target_shape
+    bz, by, bx = block_shape
+    tiles = [
+        (
+            slice(z0, min(z0 + bz, tz)),
+            slice(y0, min(y0 + by, ty)),
+            slice(x0, min(x0 + bx, tx)),
+        )
+        for z0 in range(0, tz, bz)
+        for y0 in range(0, ty, by)
+        for x0 in range(0, tx, bx)
+    ]
+    log.info('[%s] resample: source=%s → target=%s  ratio=%s  '
+             'dispatching %d tiles via dask (threads=%d) …',
+             name, tuple(src_zarr.shape), tuple(target_shape),
+             tuple(round(r, 3) for r in ratio), len(tiles), n_workers)
+
+    @delayed
+    def _process(tile):
+        # Map the output tile's index range back to source index space.
+        in_sl = []
+        for a, o in enumerate(tile):
+            lo = int(np.floor(o.start * ratio[a])) - halo
+            hi = int(np.ceil((o.stop - 1) * ratio[a])) + 1 + halo
+            lo = max(lo, 0)
+            hi = min(hi, src_zarr.shape[a])
+            if hi <= lo:
+                return 0.0          # tile lies entirely outside the source → 0
+            in_sl.append(slice(lo, hi))
+        in_sl = tuple(in_sl)
+
+        block = np.asarray(src_zarr[in_sl], dtype=np.float32)
+        src_origin = tuple(in_sl[a].start * src_spacing_mm[a] for a in range(3))
+        src_ants = ants.from_numpy(block, origin=src_origin,
+                                   spacing=src_spacing_mm)
+
+        tgt_shape  = tuple(o.stop - o.start for o in tile)
+        tgt_origin = tuple(tile[a].start * target_spacing_mm for a in range(3))
+        tgt_ants = ants.from_numpy(
+            np.zeros(tgt_shape, dtype=np.float32),
+            origin=tgt_origin,
+            spacing=(target_spacing_mm,) * 3,
+        )
+
+        res = ants.resample_image_to_target(
+            src_ants, tgt_ants, interp_type='linear',
+        ).numpy()
+        out[tile] = res
+        return float(res.sum())
+
+    tasks = [_process(tile) for tile in tiles]
+
+    t0 = time.perf_counter()
+    results = dask.compute(*tasks, scheduler='threads', num_workers=n_workers)
+    elapsed = time.perf_counter() - t0
+
+    log.info('[%s] resample done in %.1fs — output shape=%s mean=%.4f',
+             name, elapsed, out.shape, float(out.mean()))
+    return out
