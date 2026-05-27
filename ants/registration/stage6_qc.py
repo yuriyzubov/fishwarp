@@ -32,6 +32,12 @@ def dice(a: np.ndarray, b: np.ndarray) -> float:
     return 2 * intersection / (a.sum() + b.sum() + 1e-9)
 
 
+def mean_abs_sdf_diff(fixed_sdf: np.ndarray, warped_sdf: np.ndarray,
+                      overlap_mask: np.ndarray) -> float:
+    diff = np.abs(fixed_sdf[overlap_mask] - warped_sdf[overlap_mask])
+    return float(diff.mean())
+
+
 def bbox_overlap(a: np.ndarray, b: np.ndarray) -> float:
     """Intersection-over-union of bounding boxes of foreground regions."""
     def bbox(arr):
