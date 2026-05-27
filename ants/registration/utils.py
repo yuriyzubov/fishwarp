@@ -41,8 +41,52 @@ import zarr
 
 import neuroglancer
 
-_COMPRESSOR = numcodecs.Zstd(level=3)
-_CHUNKS     = (128, 128, 128)
+_CHUNKS = (128, 128, 128)
+
+
+def _create_array(path: 'Path', shape: tuple, dtype, fill_value=0,
+                  chunks: tuple = _CHUNKS):
+    """
+    Create a chunk-aligned, zstd-compressed zarr array using zarr-python 3's
+    create_array API. The on-disk format (v2 vs v3) is driven by
+    config.ZARR_FORMAT — reads in this module remain auto-detect, so existing
+    v2 stores still load regardless of this setting.
+
+    Differences from zarr-python 2 we collapse here:
+      * compressor= (singular) → compressors= (list)
+      * dimension_separator= kwarg replaced by chunk_key_encoding= for v2
+      * numcodecs Zstd vs zarr.codecs.ZstdCodec depending on output format
+    """
+    import config
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    kwargs = dict(
+        store=str(path),
+        shape=shape,
+        chunks=chunks,
+        dtype=dtype,
+        fill_value=fill_value,
+        overwrite=True,
+    )
+
+    if config.ZARR_FORMAT == 2:
+        kwargs['zarr_format'] = 2
+        kwargs['compressors'] = numcodecs.Zstd(level=3)
+        # v2's '.zarray' carries dimension_separator; in zarr-python 3 it
+        # is set through chunk_key_encoding.
+        kwargs['chunk_key_encoding'] = {'name': 'v2', 'separator': '/'}
+    elif config.ZARR_FORMAT == 3:
+        from zarr.codecs import ZstdCodec
+        kwargs['zarr_format'] = 3
+        kwargs['compressors'] = [ZstdCodec(level=3)]
+    else:
+        raise ValueError(
+            f'config.ZARR_FORMAT must be 2 or 3 (got {config.ZARR_FORMAT!r})'
+        )
+
+    return zarr.create_array(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -134,19 +178,9 @@ def from_ants(ants_image: ants.ANTsImage) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def save_volume(path: Path, array: np.ndarray) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    z = zarr.open_array(
-        str(path),
-        mode='w',
-        shape=array.shape,
-        chunks=_CHUNKS,
-        dtype=array.dtype,
-        compressor=_COMPRESSOR,
-        dimension_separator='/',
-    )
+    z = _create_array(path, array.shape, array.dtype)
     z[:] = array
-    log.info('Saved %s  shape=%s  dtype=%s', path, array.shape, array.dtype)
+    log.info('Saved %s  shape=%s  dtype=%s', Path(path), array.shape, array.dtype)
 
 
 def load_volume(path: Path) -> np.ndarray:
@@ -198,17 +232,8 @@ def binarize_to_zarr(
              name, src.shape, src.dtype, getattr(src, 'chunks', None))
 
     out_shape = tuple(s + 2 * pad for s in src.shape)
-    Path(dst_path).parent.mkdir(parents=True, exist_ok=True)
-    dst = zarr.open_array(
-        str(dst_path),
-        mode='w',
-        shape=out_shape,
-        chunks=block_shape,
-        dtype=np.uint8,
-        compressor=_COMPRESSOR,
-        dimension_separator='/',
-        fill_value=0,
-    )
+    dst = _create_array(dst_path, out_shape, np.uint8,
+                        fill_value=0, chunks=block_shape)
     log.info('[%s] dest:   shape=%s chunks=%s pad=%d',
              name, out_shape, block_shape, pad)
 
