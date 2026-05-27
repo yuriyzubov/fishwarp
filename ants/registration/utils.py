@@ -360,3 +360,31 @@ def resample_to_grid_chunked(
     log.info('[%s] resample done in %.1fs — output shape=%s mean=%.4f',
              name, elapsed, out.shape, float(out.mean()))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Registration helpers
+# ---------------------------------------------------------------------------
+
+def quick_dice(a: np.ndarray, b: np.ndarray) -> float:
+    """Fast numpy Dice coefficient between two binary arrays."""
+    a, b = a.astype(bool), b.astype(bool)
+    return float(2 * (a & b).sum() / (a.sum() + b.sum() + 1e-9))
+
+
+def warp_binary(moving_binary: np.ndarray, moving_spacing_nm: tuple,
+                fixed_binary: np.ndarray, fixed_spacing_nm: tuple,
+                transformlist: list) -> np.ndarray:
+    """
+    Apply a transform chain to a binary mask using nearestNeighbor interpolation.
+    Returns uint8 array in fixed space.
+    """
+    fixed_ants  = to_ants(fixed_binary.astype(np.float32),  fixed_spacing_nm)
+    moving_ants = to_ants(moving_binary.astype(np.float32), moving_spacing_nm)
+    warped = ants.apply_transforms(
+        fixed=fixed_ants,
+        moving=moving_ants,
+        transformlist=transformlist,
+        interpolator='nearestNeighbor',
+    )
+    return (from_ants(warped) > 0.5).astype(np.uint8)
