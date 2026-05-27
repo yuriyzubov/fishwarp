@@ -32,7 +32,9 @@ _n_threads = os.environ.setdefault(
 )
 log.info('ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS = %s', _n_threads)
 
+import ants
 import numcodecs
+import numpy as np
 
 _COMPRESSOR = numcodecs.Zstd(level=3)
 _CHUNKS     = (128, 128, 128)
@@ -50,3 +52,30 @@ def timed(label: str):
     yield
     elapsed = time.perf_counter() - t0
     log.info('DONE   %s  (%.1f s)', label, elapsed)
+
+
+# ---------------------------------------------------------------------------
+# ANTs conversion
+# ---------------------------------------------------------------------------
+#
+# Axis ordering note:
+#   numpy arrays in this pipeline are always (z, y, x).
+#   ants.from_numpy() applies spacing[k] to numpy axis k — it does NOT reverse
+#   axes. So spacing must be passed in the SAME (z, y, x) order as the array.
+#   (An earlier version reversed the tuple; that silently swapped the z and x
+#   spacings, badly distorting anisotropic volumes like the confocal moving
+#   image — 1000/259/259 nm became a 3.86x-stretched pancake.)
+
+def to_ants(array: np.ndarray, spacing_nm: tuple) -> ants.ANTsImage:
+    """
+    Wrap a (z, y, x) numpy array as an ANTs image.
+    spacing_nm must be a (z, y, x) tuple in nanometers; ANTs receives it in
+    the same axis order, converted to mm.
+    """
+    spacing_mm = tuple(s / 1e6 for s in spacing_nm)  # (z, y, x) mm
+    return ants.from_numpy(array.astype(np.float32), spacing=spacing_mm)
+
+
+def from_ants(ants_image: ants.ANTsImage) -> np.ndarray:
+    """Return the numpy array backing an ANTs image (z, y, x ordering preserved)."""
+    return ants_image.numpy()
