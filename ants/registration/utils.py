@@ -39,6 +39,8 @@ import numcodecs
 import numpy as np
 import zarr
 
+import neuroglancer
+
 _COMPRESSOR = numcodecs.Zstd(level=3)
 _CHUNKS     = (128, 128, 128)
 
@@ -483,3 +485,64 @@ def load_reg_images(downsample_factor: int = 1):
         return fixed_ds, moving_ds
 
     raise ValueError(f'Unknown REG_IMAGE_TYPE: {config.REG_IMAGE_TYPE!r}')
+
+
+# ---------------------------------------------------------------------------
+# Neuroglancer helpers
+# ---------------------------------------------------------------------------
+
+def make_neuroglancer_dims(spacing_nm: tuple) -> neuroglancer.CoordinateSpace:
+    """
+    Build a neuroglancer CoordinateSpace for a (z, y, x) volume.
+    spacing_nm is a (z, y, x) tuple in nanometers.
+    """
+    z_nm, y_nm, x_nm = spacing_nm
+    return neuroglancer.CoordinateSpace(
+        names=['z', 'y', 'x'],
+        units=['nm', 'nm', 'nm'],
+        scales=[z_nm, y_nm, x_nm],
+    )
+
+
+def add_segmentation_layer(
+    state,
+    name: str,
+    array,
+    dims: neuroglancer.CoordinateSpace,
+    visible: bool = True,
+    segments: tuple = (1,),
+) -> None:
+    """
+    Add a LocalVolume-backed SegmentationLayer to a neuroglancer ViewerState.
+    array may be a numpy array or zarr array; both are accepted.
+    segments controls which label IDs are visible on load.
+    visible is set on the ManagedLayer wrapper after appending.
+    """
+    # Pass array directly — zarr arrays are served chunk-by-demand via __getitem__.
+    # numpy arrays are served from RAM. Both work; no full load needed for zarr.
+    vol = neuroglancer.LocalVolume(
+        data=array,
+        dimensions=dims,
+    )
+    layer = neuroglancer.SegmentationLayer(source=vol)
+    layer.segments = set(segments)
+    state.layers.append(name=name, layer=layer)
+    state.layers[name].visible = visible  # visible lives on ManagedLayer, not SegmentationLayer
+
+
+def serve_viewer(viewer: neuroglancer.Viewer) -> None:
+    """
+    Print the viewer URL prominently and block until Ctrl-C.
+    The URL prefix is intentionally plain stdout (not logging) so it stands out.
+    """
+    print()
+    print('=' * 60)
+    print(f'NEUROGLANCER URL: {viewer.get_viewer_url()}')
+    print('=' * 60)
+    print('Press Ctrl-C to stop the viewer.')
+    print()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print('\nViewer stopped.')
