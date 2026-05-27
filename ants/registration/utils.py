@@ -151,3 +151,108 @@ def load_volume(path: Path) -> np.ndarray:
     arr = zarr.open_array(str(path), mode='r')[:]
     log.info('Loaded %s  shape=%s  dtype=%s', path, arr.shape, arr.dtype)
     return arr
+
+
+# ---------------------------------------------------------------------------
+# Chunked streaming binarize: read source zarr block-by-block, threshold to
+# uint8, write to destination zarr. Never holds the full array in RAM.
+# Parallelized with dask.delayed + the threaded scheduler — zarr decompression
+# and numpy ufuncs release the GIL, so threads scale across cores here.
+# ---------------------------------------------------------------------------
+
+def binarize_to_zarr(
+    src_spec: dict,
+    dst_path: Path,
+    name: str = '',
+    pad: int = 0,
+    n_workers: int = 16,
+    block_shape: tuple = _CHUNKS,
+) -> dict:
+    """
+    Stream-binarize a 3D instance segmentation zarr into a uint8 binary zarr.
+
+    Iterates over `block_shape`-aligned slabs of the source, dispatches each
+    block (read → `>0` → write) as a dask.delayed task, then runs them all
+    via dask.compute on the threaded scheduler.
+
+    pad > 0 grows the destination shape by 2*pad on each axis and offsets
+    writes by `pad`. Border voxels keep the zarr fill value (0).
+    """
+    import dask
+    from dask import delayed
+
+    src_path = src_spec['path']
+    component = src_spec.get('component')
+
+    src_root = zarr.open(src_path, mode='r')
+    src = src_root[component] if component else src_root
+
+    if src.ndim != 3:
+        raise ValueError(
+            f"Source at {src_path}/{component} is not 3D (shape={src.shape})"
+        )
+
+    log.info('[%s] source: shape=%s dtype=%s chunks=%s',
+             name, src.shape, src.dtype, getattr(src, 'chunks', None))
+
+    out_shape = tuple(s + 2 * pad for s in src.shape)
+    Path(dst_path).parent.mkdir(parents=True, exist_ok=True)
+    dst = zarr.open_array(
+        str(dst_path),
+        mode='w',
+        shape=out_shape,
+        chunks=block_shape,
+        dtype=np.uint8,
+        compressor=_COMPRESSOR,
+        dimension_separator='/',
+        fill_value=0,
+    )
+    log.info('[%s] dest:   shape=%s chunks=%s pad=%d',
+             name, out_shape, block_shape, pad)
+
+    bz, by, bx = block_shape
+    sz, sy, sx = src.shape
+    slabs = [
+        (
+            slice(z0, min(z0 + bz, sz)),
+            slice(y0, min(y0 + by, sy)),
+            slice(x0, min(x0 + bx, sx)),
+        )
+        for z0 in range(0, sz, bz)
+        for y0 in range(0, sy, by)
+        for x0 in range(0, sx, bx)
+    ]
+    log.info('[%s] dispatching %d blocks via dask (threads=%d) …',
+             name, len(slabs), n_workers)
+
+    @delayed
+    def _process(slab):
+        block = src[slab]
+        binary = (block > 0).astype(np.uint8)
+        if pad:
+            out_slab = tuple(slice(s.start + pad, s.stop + pad) for s in slab)
+        else:
+            out_slab = slab
+        dst[out_slab] = binary
+        return int(binary.sum()), binary.size
+
+    tasks = [_process(slab) for slab in slabs]
+
+    t0 = time.perf_counter()
+    results = dask.compute(*tasks, scheduler='threads', num_workers=n_workers)
+    elapsed = time.perf_counter() - t0
+
+    total_fg = sum(r[0] for r in results)
+    total_n  = sum(r[1] for r in results)
+    occ = total_fg / total_n if total_n else 0.0
+    log.info('[%s] done in %.1fs — foreground=%d / %d  occupancy=%.3f',
+             name, elapsed, total_fg, total_n, occ)
+
+    return {
+        'src_shape': tuple(src.shape),
+        'out_shape': out_shape,
+        'foreground': total_fg,
+        'n_voxels': total_n,
+        'occupancy': occ,
+        'elapsed_s': elapsed,
+    }
