@@ -5,6 +5,8 @@ Shared helpers: I/O, ANTs conversion, neuroglancer setup, logging, timing.
 import logging
 import os
 import sys
+import time
+from contextlib import contextmanager
 
 # ---------------------------------------------------------------------------
 # Logging — must be configured before any third-party imports, which may
@@ -34,3 +36,17 @@ import numcodecs
 
 _COMPRESSOR = numcodecs.Zstd(level=3)
 _CHUNKS     = (128, 128, 128)
+
+
+# ---------------------------------------------------------------------------
+# Timing
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def timed(label: str):
+    """Context manager that logs elapsed time for a block."""
+    log.info('START  %s', label)
+    t0 = time.perf_counter()
+    yield
+    elapsed = time.perf_counter() - t0
+    log.info('DONE   %s  (%.1f s)', label, elapsed)
