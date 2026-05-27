@@ -44,6 +44,16 @@ WARPED        = OUTPUT_ROOT / 'warped'
 QC            = OUTPUT_ROOT / 'qc'
 
 # ---------------------------------------------------------------------------
+# Zarr on-disk format for intermediate / output stores
+# ---------------------------------------------------------------------------
+#   2 — zarr v2 (broadest downstream compatibility, e.g. neuroglancer's
+#       reader is most mature against v2)
+#   3 — zarr v3 (newer spec; use only when every downstream consumer
+#       supports it)
+# Reads always auto-detect format, so this only affects what gets written.
+ZARR_FORMAT = 2
+
+# ---------------------------------------------------------------------------
 # Stage 0 / 1b (chunked dask scheduler)
 # ---------------------------------------------------------------------------
 
