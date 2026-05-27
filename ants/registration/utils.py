@@ -2,6 +2,7 @@
 Shared helpers: I/O, ANTs conversion, neuroglancer setup, logging, timing.
 """
 
+import json
 import logging
 import os
 import sys
@@ -54,6 +55,49 @@ def timed(label: str):
     yield
     elapsed = time.perf_counter() - t0
     log.info('DONE   %s  (%.1f s)', label, elapsed)
+
+
+# ---------------------------------------------------------------------------
+# Zarr I/O
+# ---------------------------------------------------------------------------
+
+def load_zarr(spec: dict) -> np.ndarray:
+    """
+    Open a zarr store, navigate to the component if specified, and return
+    the array as a numpy ndarray.  Prints attrs, shape, dtype, and chunks
+    for sanity-checking.  Fails loudly if the array has more than 3 dimensions.
+    """
+    path = spec['path']
+    component = spec.get('component')
+
+    log.info('Opening zarr store: %s', path)
+    store = zarr.open(path, mode='r')
+
+    if component:
+        log.info('Navigating to component: %s', component)
+        arr = store[component]
+    else:
+        arr = store
+
+    # Print metadata before loading
+    attrs = dict(arr.attrs) if hasattr(arr, 'attrs') else {}
+    log.info('  .attrs   : %s', json.dumps(attrs, indent=2, default=str))
+    log.info('  .shape   : %s', arr.shape)
+    log.info('  .dtype   : %s', arr.dtype)
+    log.info('  .chunks  : %s', getattr(arr, 'chunks', 'N/A'))
+
+    if arr.ndim != 3:
+        raise ValueError(
+            f"Array at '{path}'/'{component}' has {arr.ndim} dimensions (shape={arr.shape}). "
+            "Expected exactly 3 (z, y, x). Please specify which axes to use."
+        )
+
+    log.info('Loading into RAM …')
+    with timed('zarr → numpy'):
+        data = arr[:]
+
+    log.info('Loaded array: shape=%s  dtype=%s', data.shape, data.dtype)
+    return data
 
 
 # ---------------------------------------------------------------------------
